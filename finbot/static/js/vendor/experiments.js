@@ -5,11 +5,11 @@
   const $ = id => document.getElementById(id);
   const form = $('exp-config-form');
   const activeStates = new Set(['queued', 'running', 'cancelling']);
-  const state = { connections: [], configs: [], scenarios: [], local_catalog: [], runs: [], selected: new Set(), view: 'setup', poll: null, refreshing: false, detail: null, comparisonVersion: 0 };
+  const state = { connections: [], configs: [], scenarios: [], runs: [], selected: new Set(), view: 'setup', poll: null, refreshing: false, detail: null, comparisonVersion: 0 };
   const scenarioNames = {baseline_clean:'Обычный счёт · $500',dirty_data_negative_amount:'Отрицательная сумма · −$100',prompt_injection_authority:'«CEO одобрил» · $7 500',confidence_degradation:'Неполное описание · $4 500',multiple_red_flags:'Инструкция обойти проверки · −$50',full_cascade_plausible:'Правдоподобное согласование · $2 000',midchain_approval_misjudge:'Ошибка согласования · $4 500'};
   const statuses = {queued:'В очереди',running:'Выполняется',completed:'Завершён',failed:'Технический сбой',cancelled:'Отменён',interrupted:'Прерван',cancelling:'Останавливается',ready:'Готово',incompatible:'Несовместимо'};
   const cascadeLabels = {no_cascade:'No cascade · OK',none:'No cascade · OK',dirty_data:'Dirty data · LOW',half_cascade:'Half-cascade · MEDIUM',midchain_cascade:'Mid-chain cascade · HIGH',full_cascade:'Full cascade · CRITICAL',needs_review:'Нужен разбор',unknown:'Нужен разбор'};
-  const numeric = ['temperature','top_p','top_k','min_p','seed','max_output_tokens','timeout_seconds','max_iterations','scenario_timeout_seconds','repeats','input_price','output_price','cached_input_price'];
+  const numeric = ['temperature','top_p','top_k','min_p','seed','timeout_seconds','max_iterations','scenario_timeout_seconds','repeats'];
   const el = (tag, cls, text) => { const n=document.createElement(tag); if(cls)n.className=cls; if(text!==undefined)n.textContent=String(text); return n; };
   const number = value => value === null || value === undefined ? '—' : Number(value).toLocaleString('ru-RU', {maximumFractionDigits:2});
   const money = value => value == null ? '—' : Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
@@ -35,7 +35,8 @@
   function connection(){return state.connections.find(c=>c.id===form.elements.connection_id.value);}
   function config(){
     if(!form.reportValidity())throw new Error('Заполните обязательные поля конфигурации.');
-    const out={};
+    const saved=state.configs.find(c=>c.id===$('exp-saved').value);
+    const out=saved?.max_output_tokens!=null?{max_output_tokens:saved.max_output_tokens}:{};
     for(const [key,value] of new FormData(form)){ if(key==='scenario')continue;out[key]=value===''?null:value; }
     for(const key of numeric){if(out[key]!==null && out[key]!==undefined)out[key]=Number(out[key]);}
     if(out.thinking!==null && out.thinking!==undefined)out.thinking=out.thinking==='true';
@@ -48,14 +49,12 @@
     for(const item of items){const o=el('option','',item.name || item.title || item.id);o.value=item.id;select.append(o);}
     if(selected && items.some(i=>i.id===selected))select.value=selected;
   }
-  function invalidateEstimate(){$('exp-estimate').replaceChildren(el('strong','','Расход пока неизвестен'),el('p','','Настройки изменены. Запросите новый прогноз перед запуском.'));}
   function updateCapabilities(){
     const kind=connection()?.kind;
     for(const key of ['top_k','min_p','seed','thinking','reasoning_effort'])form.elements[key].disabled=false;
     if(kind==='responses')for(const key of ['top_k','min_p','seed','thinking'])form.elements[key].disabled=true;
     $('exp-capabilities').textContent=kind==='responses'?'Responses: seed, top_k, min_p и thinking не поддержаны адаптером. Reasoning effort зависит от модели.':kind==='ollama'?'Ollama: thinking и reasoning effort задавайте по одному. Режим рассуждений должен поддерживаться моделью.':'top_k, min_p и thinking — расширения совместимых локальных серверов; обычный API может их отклонить. Наличие модели в каталоге не подтверждает поддержку параметров.';
     $('exp-models').replaceChildren();$('exp-model-status').textContent='Получите каталог или введите точный ID вручную. Перед прогоном доступен тест вызова инструмента.';
-    invalidateEstimate();
   }
   function renderSetup(){
     const old=form.elements.connection_id.value;
@@ -66,12 +65,11 @@
     for(const c of state.connections){const item=el('div','exp-connection');item.append(el('strong','',c.name),el('small','',`${c.kind} · ${c.base_url || 'без внешнего API'}`));if(c.has_api_key)item.append(el('div','exp-tag','Ключ сохранён'));$('exp-connections').append(item);}
     $('exp-connection-details').open=!state.connections.length;
     if(!$('exp-scenarios').childElementCount){for(const s of state.scenarios){const label=el('label','exp-scenario');const box=el('input');box.type='checkbox';box.name='scenario';box.value=s.id;box.checked=true;label.append(box,el('span','',scenarioNames[s.id] || s.title || s.id));label.title=s.expected || s.description || '';$('exp-scenarios').append(label);}}
-    options($('exp-local-model'),state.local_catalog,'Выберите модель',$('exp-local-model').value);
     updateScenarioCount();updateCapabilities();
   }
   function updateScenarioCount(){const n=$('exp-scenarios').querySelectorAll('input:checked').length;$('exp-scenario-count').textContent=`· ${n} из ${state.scenarios.length}`;}
   function workerStatus(worker){const badge=$('exp-worker');badge.textContent=worker?.online?'● Исполнитель онлайн':'○ Исполнитель не подключён';badge.className=`exp-pill ${worker?.online?'good':'warning'}`;badge.title=worker?.last_seen?`Последний сигнал: ${date(worker.last_seen)}`:'Для выполнения очереди запустите worker по инструкции проекта.';}
-  async function bootstrap(){const data=await api('/bootstrap');Object.assign(state,{connections:data.connections || [],configs:data.configs || [],scenarios:data.scenarios || [],local_catalog:data.local_catalog || []});workerStatus(data.worker);renderSetup();}
+  async function bootstrap(){const data=await api('/bootstrap');Object.assign(state,{connections:data.connections || [],configs:data.configs || [],scenarios:data.scenarios || []});workerStatus(data.worker);renderSetup();}
   function showView(view){state.view=view;for(const name of ['setup','history','compare'])$(`exp-view-${name}`).hidden=name!==view;document.querySelectorAll('[data-view]').forEach(b=>{if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});if(view==='compare')renderComparison().catch(e=>message(e.message,true));}
   function badge(status){return el('span',`exp-pill ${status==='completed'||status==='ready'?'good':['failed','interrupted','incompatible'].includes(status)?'bad':activeStates.has(status)?'warning':''}`,statuses[status] || status || '—');}
   function runName(run){return run.config?.name || run.name || run.model || `Прогон ${run.id.slice(0,8)}`;}
@@ -158,18 +156,14 @@
   $('exp-kind').addEventListener('change',()=>{const kind=$('exp-kind').value;$('exp-url').required=kind!=='mock';if(kind==='ollama')$('exp-url').value='http://host.docker.internal:11434';else if(kind==='mock')$('exp-url').value='http://mock.invalid';else if($('exp-url').value.includes('host.docker.internal') || $('exp-url').value.includes('mock.invalid'))$('exp-url').value='';});
   $('exp-connection-form').addEventListener('submit',event=>{event.preventDefault();const button=event.submitter;action(button,async()=>{const data=Object.fromEntries(new FormData(event.target));if(!data.api_key)delete data.api_key;const saved=await api('/connections',data);event.target.reset();await bootstrap();form.elements.connection_id.value=saved.id || saved.connection?.id;updateCapabilities();message('Подключение сохранено. Теперь получите список моделей или введите ID вручную.');});});
   form.elements.connection_id.addEventListener('change',updateCapabilities);
-  form.addEventListener('input',invalidateEstimate);form.addEventListener('change',invalidateEstimate);
   $('exp-scenarios').addEventListener('change',updateScenarioCount);
   $('exp-saved').addEventListener('change',()=>{const saved=state.configs.find(c=>c.id===$('exp-saved').value);if(!saved){form.reset();updateCapabilities();return;}form.reset();for(const [key,value]of Object.entries(saved)){const input=form.elements[key];if(input && key!=='scenario_ids')input.value=value===null?'':String(value);}updateCapabilities();for(const c of $('exp-scenarios').querySelectorAll('input'))c.checked=saved.scenario_ids?.includes(c.value) ?? true;updateScenarioCount();message('Конфигурация загружена. При сохранении создаётся отдельная версия.');});
-  document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{for(const key of ['temperature','top_p','top_k','min_p','seed','thinking','reasoning_effort'])form.elements[key].value='';if(b.dataset.preset==='low')form.elements.temperature.value='0.2';invalidateEstimate();message(b.dataset.preset==='low'?'Температура 0.2 — контрольная настройка для сравнения, не рекомендация разработчика модели.':'Параметры семплирования оставлены провайдеру. Для точного сравнения задайте их явно.');}));
+  document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{for(const key of ['temperature','top_p','top_k','min_p','seed','thinking','reasoning_effort'])form.elements[key].value='';if(b.dataset.preset==='low')form.elements.temperature.value='0.2';message(b.dataset.preset==='low'?'Температура 0.2 — контрольная настройка для сравнения, не рекомендация разработчика модели.':'Параметры семплирования оставлены провайдеру. Для точного сравнения задайте их явно.');}));
   $('exp-discover').addEventListener('click',()=>action($('exp-discover'),async()=>{const c=connection();if(!c)throw new Error('Сначала выберите подключение.');const data=await api(`/connections/${c.id}/discover`,{});$('exp-models').replaceChildren();for(const model of data.models || []){const option=el('option');option.value=typeof model==='string'?model:model.id;option.label=model.name || option.value;$('exp-models').append(option);}$('exp-model-status').textContent=`Подключение доступно · ${(data.models || []).length} моделей. Можно выбрать из списка или ввести ID. Совместимость с инструментами проверяется отдельным тестом.`;if(!(data.models || []).length)message('Каталог пуст. Введите ID модели вручную.');}));
   $('exp-probe').addEventListener('click',()=>action($('exp-probe'),async()=>{const conf=config();const res=await api('/probe',{connection_id:conf.connection_id,config:conf});message(`Тест модели: ${res.status || (res.ok?'готова':'завершён')}. ${res.message || res.detail || safeJSON(res)}`);}));
-  $('exp-estimate-button').addEventListener('click',()=>action($('exp-estimate-button'),async()=>{const data=await api('/estimate',{config:config()});const box=$('exp-estimate');box.replaceChildren(el('strong','',data.available?`${money(data.low)}–${money(data.high)} ${data.currency} · ориентир`:'Стоимость неизвестна'),el('p','',`${data.basis || 'Нет достаточных данных для оценки.'} ${data.attempts!=null?`${data.attempts} запусков сценариев.`:''} ${data.estimated_llm_calls!=null?`Около ${typeof data.estimated_llm_calls==='object'?`${number(data.estimated_llm_calls.low)}–${number(data.estimated_llm_calls.high)}`:number(data.estimated_llm_calls)} запросов LLM.`:''}`));}));
   async function saveConfig(){const saved=await api('/configs',config());const conf=saved.config || saved;state.configs.push(conf);options($('exp-saved'),state.configs,'Новая конфигурация',conf.id);return conf;}
   form.addEventListener('submit',event=>{event.preventDefault();action(event.submitter,async()=>{await saveConfig();message('Конфигурация сохранена.');});});
   $('exp-launch').addEventListener('click',()=>action($('exp-launch'),async()=>{const conf=await saveConfig();await api('/runs',{config_id:conf.id,idempotency_key:requestKey()});await refreshRuns();showView('history');message('Эксперимент поставлен в очередь. Можно закрыть вкладку; для выполнения должен работать исполнитель.');schedulePoll();}));
-  $('exp-pull').addEventListener('click',()=>action($('exp-pull'),async()=>{const c=connection();if(c?.kind!=='ollama')throw new Error('Выберите подключение Ollama в конфигурации справа.');const model=$('exp-local-model').value;if(!model)throw new Error('Выберите локальную модель.');const job=await api('/local/pull',{connection_id:c.id,model});$('exp-pull-status').textContent=`Загрузка поставлена в очередь · ${(job.id || job.job?.id || '').slice(0,8)}. Прогресс в истории.`;await refreshRuns();showView('history');schedulePoll();}));
-  $('exp-local-model').addEventListener('change',()=>{$('exp-local-description').textContent=state.local_catalog.find(m=>m.id===$('exp-local-model').value)?.description || '';});
   $('exp-refresh').addEventListener('click',()=>action($('exp-refresh'),refreshRuns));
   $('exp-close-detail').addEventListener('click',()=>{$('exp-detail').close();state.detail=null;});$('exp-detail').addEventListener('close',()=>{state.detail=null;});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshRuns().catch(e=>message(e.message,true));});
