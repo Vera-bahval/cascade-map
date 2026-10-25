@@ -11,6 +11,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=${DATABASE_URL:-sqlite://data/finbot.db}
       - POSTGRES_HOST=postgres
+      - FINBOT_EXPERIMENTS_DB=${FINBOT_EXPERIMENTS_DB:-/app/data/experiments.db}
     depends_on:
       redis:
         condition: service_healthy
@@ -33,6 +34,23 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  experiments-worker:
+    build:
+      context: .
+      target: ${DOCKER_TARGET:-app}
+    entrypoint: ["python", "-m", "finbot.experiments.worker"]
+    command: []
+    env_file: .env
+    environment:
+      - FINBOT_EXPERIMENTS_DB=${FINBOT_EXPERIMENTS_DB:-/app/data/experiments.db}
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine

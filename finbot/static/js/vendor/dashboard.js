@@ -14,6 +14,11 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 async function initializeDashboard() {
+    // Experiments belong to the session and do not require a selected vendor.
+    if (document.querySelector(".experiments")) {
+        initializeSidebar();
+        return;
+    }
     try {
         await loadVendorContext();
         initializeVendorSwitcher();

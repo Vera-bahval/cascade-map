@@ -6,6 +6,7 @@ from finbot.config import settings
 from finbot.core.error_handlers import register_error_handlers
 
 from .routes import api_router, web_router
+from finbot.experiments.api import router as experiments_router
 
 # Create Vendor Portal App
 app = FastAPI(
@@ -20,3 +21,4 @@ register_error_handlers(app)
 # Include routers
 app.include_router(web_router)
 app.include_router(api_router)
+app.include_router(experiments_router)

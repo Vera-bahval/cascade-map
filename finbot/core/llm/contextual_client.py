@@ -159,8 +159,18 @@ class ContextualLLMClient:
         start_time = datetime.now(UTC)
 
         try:
-            # Pass original request unchanged — underlying client resolves its own defaults
-            response = await self.llm_client.chat(request=request)
+            # Copy metadata so concurrent agents can be distinguished in experiment traces.
+            enriched_request = request.model_copy(
+                update={
+                    "metadata": {
+                        **(request.metadata or {}),
+                        "agent_name": self.agent_name,
+                        "workflow_id": self.workflow_id,
+                        "interaction_id": interaction_id,
+                    }
+                }
+            )
+            response = await self.llm_client.chat(request=enriched_request)
 
             duration_ms = int((datetime.now(UTC) - start_time).total_seconds() * 1000)
 
@@ -171,10 +181,10 @@ class ContextualLLMClient:
                 model_output=response.content,
             )
 
-            # Emit success event
+            # Provider-level failures are not successful model responses.
             await event_bus.emit_agent_event(
                 agent_name=self.agent_name,
-                event_type="llm_request_success",
+                event_type="llm_request_success" if response.success else "llm_request_error",
                 event_subtype="llm",
                 event_data={
                     **event_data,
@@ -183,7 +193,7 @@ class ContextualLLMClient:
                     "response_content": response.content,
                     "has_tool_calls": bool(response.tool_calls),
                     "tool_call_count": len(response.tool_calls or []),
-                    "success": True,
+                    "success": response.success,
                     "response_dump": response.model_dump_json(),
                 },
                 session_context=self.session_context,

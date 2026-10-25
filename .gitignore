@@ -79,3 +79,7 @@ SECURITY_BUGS_REPORT.md
 
 # SQLite databases
 *.db
+
+# Private experiment history and encryption key
+/data/experiments.db*
+/data/experiments.db.key

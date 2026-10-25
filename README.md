@@ -135,6 +135,11 @@ Platform runs at [http://localhost:8000](http://localhost:8000)
 
 ## Configuration
 
+### CascadeMap experiments
+
+Run `./start.sh` to start the app and experiment worker together. Open the URL
+printed in the terminal. [Usage and metrics](docs/experiments.md).
+
 Key environment variables (see `[.env.example](.env.example)` for the full template):
 
 

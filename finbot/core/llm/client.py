@@ -3,6 +3,8 @@ TODO: incorporate reasoning capabilities
 """
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from finbot.config import settings
 from finbot.core.data.models import LLMRequest, LLMResponse
@@ -67,9 +69,36 @@ class LLMClient:
             )
 
 
-llm_client = LLMClient()
+_default_client = None
+_active_client = ContextVar("finbot_llm_client", default=None)
 
 
 def get_llm_client() -> LLMClient:
-    """Get the LLM client"""
-    return llm_client
+    """Use a task-local experiment client, or lazily create the ordinary client."""
+    active = _active_client.get()
+    if active is not None:
+        return active
+    global _default_client
+    if _default_client is None:
+        _default_client = LLMClient()
+    return _default_client
+
+
+@contextmanager
+def use_llm_client(client):
+    """Scope an immutable client to this task and its delegated agent tasks."""
+    token = _active_client.set(client)
+    try:
+        yield client
+    finally:
+        _active_client.reset(token)
+
+
+def __getattr__(name):
+    # Preserve the legacy public singleton without initializing credentials on import.
+    if name == "llm_client":
+        global _default_client
+        if _default_client is None:
+            _default_client = LLMClient()
+        return _default_client
+    raise AttributeError(name)

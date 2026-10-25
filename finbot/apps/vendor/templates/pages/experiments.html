@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% block title %}Эксперименты · CascadeMap{% endblock %}
+{% block nav_experiments %}active{% endblock %}
+{% block page_title %}Эксперименты{% endblock %}
+{% block page_subtitle %}Одна конфигурация. Повторяемые сценарии. Проверяемые результаты.{% endblock %}
+{% block header_actions %}<span id="exp-worker" class="exp-pill">Проверяем исполнитель…</span>{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ url_for('static', path='css/vendor/experiments.css') }}">{% endblock %}
+{% block content %}
+<div class="experiments" lang="ru">
+  <div class="exp-hero"><div><span class="exp-eyebrow">CASCADEMAP / RESEARCH WORKSPACE</span><h2>Эксперименты с моделями</h2><p>Сравнивайте модели в одной среде. Каждый запуск сохраняет настройки, события агентов и фактический исход.</p></div><div class="exp-hero-mark" aria-hidden="true">01 <span>→</span> 07</div></div>
+  <div id="exp-message" class="exp-message" role="status" aria-live="polite" hidden></div>
+  <nav class="exp-tabs" aria-label="Разделы экспериментов"><button type="button" data-view="setup" aria-current="page">01 · Настройка</button><button type="button" data-view="history">02 · Прогоны <span id="exp-run-count">0</span></button><button type="button" data-view="compare">03 · Сравнение <span id="exp-compare-count">0</span></button></nav>
+  <section id="exp-view-setup" class="exp-view">
+    <div class="exp-layout">
+      <aside class="exp-stack">
+        <section class="exp-card"><div class="exp-section-title"><h3>Подключения</h3><span class="exp-eyebrow">01</span></div><p class="exp-help">Ключ хранится на сервере и не возвращается в браузер.</p><div id="exp-connections" class="exp-connection-list"></div>
+          <details id="exp-connection-details" open><summary>Добавить подключение</summary><form id="exp-connection-form" class="exp-stack exp-form">
+            <label>Название<input name="name" required maxlength="100" placeholder="Например, лабораторный API"></label>
+            <label>Протокол<select name="kind" id="exp-kind"><option value="chat_completions">API · Chat Completions</option><option value="responses">API · Responses</option><option value="ollama">Локально · Ollama</option><option value="mock">Тест интерфейса · без LLM</option></select></label>
+            <label>Базовый URL<input name="base_url" id="exp-url" type="url" required placeholder="https://provider.example/v1" autocomplete="off"></label>
+            <label>API-ключ<input name="api_key" type="password" autocomplete="new-password" placeholder="Не нужен для локального сервера"></label>
+            <p class="exp-help" id="exp-connection-hint">URL задаётся со стороны сервера FinBot. Проверка каталога не запускает эксперимент.</p>
+            <button class="exp-button" type="submit">Сохранить подключение</button>
+          </form></details>
+        </section>
+        <section class="exp-card"><div class="exp-section-title"><h3>Локальные модели</h3><span class="exp-eyebrow">MAC / OLLAMA</span></div><p class="exp-help">Сначала запустите Ollama на компьютере и добавьте подключение. В Docker адрес Mac обычно http://host.docker.internal:11434.</p><label>Модель для загрузки<select id="exp-local-model"></select></label><p id="exp-local-description" class="exp-help"></p><button type="button" id="exp-pull" class="exp-button exp-secondary">Скачать в Ollama</button><p id="exp-pull-status" class="exp-help" aria-live="polite">Скачивание весов может занять время и место на диске.</p></section>
+      </aside>
+      <section class="exp-card exp-config-card"><div class="exp-section-title"><h3>Конфигурация эксперимента</h3><span class="exp-eyebrow">02</span></div>
+        <label>Сохранённые конфигурации<select id="exp-saved"><option value="">Новая конфигурация</option></select></label>
+        <form id="exp-config-form" class="exp-form">
+          <div class="exp-grid2"><label>Название<input name="name" required maxlength="120" placeholder="Qwen · низкая температура"></label><label>Подключение<select name="connection_id" id="exp-config-connection" required></select></label></div>
+          <label>Модель<div class="exp-inline"><input name="model" id="exp-model" list="exp-models" required placeholder="Выберите из каталога или введите ID"><datalist id="exp-models"></datalist><button id="exp-discover" class="exp-button exp-secondary" type="button">Получить модели</button></div></label><p id="exp-model-status" class="exp-help">Каталог не гарантирует доступ к генерации и поддержке инструментов.</p>
+          <div class="exp-preset-row"><span>Заполнить:</span><button type="button" data-preset="default">По умолчанию у провайдера</button><button type="button" data-preset="low">Низкая температура</button></div>
+          <div class="exp-grid3"><label>Температура<input name="temperature" type="number" min="0" max="2" step="0.05" placeholder="По умолчанию"></label><label>Лимит ответа, токены<input name="max_output_tokens" type="number" min="256" max="32768" step="1" value="4096" required></label><label>Повторов сценария<input name="repeats" type="number" min="1" max="20" step="1" value="1" required></label></div>
+          <details><summary>Параметры генерации и исполнения</summary><p class="exp-help">Пустое поле использует настройки провайдера. Поддержка зависит от конкретной модели; подтвердите её тестом. Меняйте один фактор в сравниваемой паре.</p><div class="exp-grid3">
+            <label>top_p<input name="top_p" type="number" min="0.001" max="1" step="0.01" placeholder="По умолчанию"></label>
+            <label>top_k<input name="top_k" type="number" min="0" max="1000" step="1" placeholder="Локальный сервер"></label>
+            <label>min_p<input name="min_p" type="number" min="0" max="1" step="0.01" placeholder="Локальный сервер"></label>
+            <label>Seed<input name="seed" type="number" min="0" max="2147483647" step="1" placeholder="Без фиксации"></label>
+            <label>Thinking<select name="thinking"><option value="">По умолчанию</option><option value="true">Включён</option><option value="false">Выключен</option></select></label>
+            <label>Reasoning effort<select name="reasoning_effort"><option value="">По умолчанию</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label>
+            <label>Лимит шагов агента<input name="max_iterations" type="number" min="1" max="30" value="10" required></label><label>Лимит сценария, сек.<input name="scenario_timeout_seconds" type="number" min="30" max="7200" value="1800" required></label>
+            <label>Таймаут запроса, сек.<input name="timeout_seconds" type="number" min="10" max="600" value="120" required></label>
+          </div><p id="exp-capabilities" class="exp-help"></p></details>
+          <fieldset><legend>Сценарии <span id="exp-scenario-count"></span></legend><div id="exp-scenarios" class="exp-scenarios"></div></fieldset>
+          <details><summary>Тариф и прогноз расходов</summary><p class="exp-help">Введите тариф именно вашего провайдера за 1 млн токенов. Каталог моделей обычно не содержит цен. Семь сценариев содержат много запросов к LLM.</p><div class="exp-grid3"><label>Входные токены<input name="input_price" min="0" step="any" type="number" placeholder="Цена неизвестна"></label><label>Выходные токены<input name="output_price" min="0" step="any" type="number" placeholder="Цена неизвестна"></label><label>Кэшированный вход<input name="cached_input_price" min="0" step="any" type="number" placeholder="Цена неизвестна"></label><label>Валюта<select name="currency"><option value="USD">USD</option><option value="RUB">RUB</option><option value="EUR">EUR</option></select></label></div></details>
+          <div id="exp-estimate" class="exp-estimate"><strong>Расход пока неизвестен</strong><p>Добавьте тариф и запросите прогноз. Финальная стоимость зависит от числа шагов и длины ответов.</p></div>
+          <div class="exp-actions"><button type="button" id="exp-estimate-button" class="exp-button exp-secondary">Оценить расходы</button><button type="button" id="exp-probe" class="exp-button exp-secondary">Тест модели · платный запрос</button><button type="submit" class="exp-button exp-secondary">Сохранить конфигурацию</button><button type="button" id="exp-launch" class="exp-button exp-primary">Запустить эксперимент →</button></div><p class="exp-help">Запуск использует выбранное подключение и может расходовать средства API. Задача продолжится после закрытия вкладки; исполнитель должен оставаться запущенным.</p>
+        </form>
+      </section>
+    </div>
+  </section>
+  <section id="exp-view-history" class="exp-view" hidden><div class="exp-section-title"><div><h3>История прогонов</h3><p class="exp-help">Выберите запуски для сравнения или откройте решения по сценариям.</p></div><button class="exp-button exp-secondary" type="button" id="exp-refresh">Обновить</button></div><div id="exp-history" class="exp-stack"></div></section>
+  <section id="exp-view-compare" class="exp-view" hidden><div class="exp-section-title"><div><h3>Бенчмарки</h3><p class="exp-help">Выберите минимум два прогона в истории. Сравнение описывает сохранённые запуски, а не статистическую значимость.</p></div></div><div id="exp-comparison"></div></section>
+  <dialog id="exp-detail" class="exp-dialog"><div class="exp-section-title"><div><span class="exp-eyebrow">RUN DETAILS</span><h3 id="exp-detail-title">Прогон</h3></div><button type="button" id="exp-close-detail" class="exp-button exp-secondary" aria-label="Закрыть детали">Закрыть ×</button></div><div id="exp-detail-content"></div></dialog>
+</div>
+{% endblock %}
+{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/experiments.js') }}" defer></script>{% endblock %}
