@@ -103,8 +103,57 @@
   function cascadeOf(c){return c.reviewed_assessment?.type || c.reviewed_cascade?.type || c.assessment?.type;}
   function caseName(c){return scenarioNames[c.scenario_id] || state.scenarios.find(s=>s.id===c.scenario_id)?.title || c.scenario_id;}
   function paymentLabel(payment){if(!payment)return 'Нет данных';if(payment.transfer_count>0)return `${number(payment.transfer_count)} перевод(а), сумма ${number(payment.total_amount)}`;return payment.attempted?'Была попытка; успешного перевода нет':'Перевода нет';}
-  async function openDetail(id){state.detail=id;const run=await api(`/runs/${id}`);renderDetail(run);if(!$('exp-detail').open)$('exp-detail').showModal();}
-  function renderDetail(run, polling=false){
+  function reportOf(c){
+    if(c.report)return c.report;
+    const a=c.result?.assessment || {};
+    return {headline:'Вывод о каскаде пока не сформирован',cascade:{label:'Каскад не подтверждён',summary:'Для вывода нужна проверка цепочки решений. Метка детектора сама по себе не подтверждает распространение ошибки.',tone:'neutral'},outcome:{label:'Фактический исход',summary:(a.reasons || []).join(' · ') || paymentLabel(c.result?.payment)},timeline:[],observations:[],unresolved:[],detector:{label:cascadeLabels[c.result?.cascade_analysis?.cascade_type] || 'Нет данных',explanation:'Для этого результата пока нет объяснения срабатывания детектора.',signals:[]}};
+  }
+  function reportTone(tone){return ['good','warning','bad'].includes(tone)?tone:'neutral';}
+  function reportPill(report){return el('span',`exp-pill exp-verdict-pill ${reportTone(report.cascade?.tone)}`,report.cascade?.label || 'Каскад не подтверждён');}
+  function evidenceList(evidence){
+    const list=el('div','exp-evidence');
+    for(const e of evidence || []){const quote=el('blockquote');if(e.agent_label)quote.append(el('small','',e.agent_label));quote.append(el('p','',e.quote || e.label || e.code || ''));list.append(quote);}
+    return list;
+  }
+  function renderCaseReport(c){
+    const report=reportOf(c),body=el('div','exp-case-body');
+    const verdict=el('section',`exp-verdict ${reportTone(report.cascade?.tone)}`);
+    verdict.append(el('h4','',report.headline || 'Результат сценария'),el('p','',report.cascade?.summary || ''));
+    body.append(verdict);
+    const expected=c.result?.assessment?.expected_behavior || state.scenarios.find(s=>s.id===c.scenario_id)?.expected;
+    const outcome=el('div','exp-outcome');
+    if(expected){const expectation=el('div');expectation.append(el('span','exp-report-label','Ожидали'),el('p','',expected));outcome.append(expectation);}
+    const observed=el('div');observed.append(el('span','exp-report-label',report.outcome?.label || 'Что произошло'),el('p','',report.outcome?.summary || 'Нет данных об исходе.'));outcome.append(observed);body.append(outcome);
+    if(report.observations?.length){
+      const observations=el('section','exp-observations');observations.append(el('h4','exp-report-section-title','Что заметно в цепочке'));
+      for(const observation of report.observations){const card=el('article',`exp-observation ${reportTone(observation.tone)}`);card.append(el('strong','',observation.title),el('p','',observation.detail));if(observation.evidence?.length){const evidence=el('details','exp-report-details');evidence.append(el('summary','','Показать фрагменты ответов'),evidenceList(observation.evidence));card.append(evidence);}observations.append(card);}
+      body.append(observations);
+    }
+    if(report.timeline?.length){
+      const timeline=el('section','exp-timeline');timeline.append(el('h4','exp-report-section-title','Как агенты пришли к результату'));
+      const steps=el('ol','exp-agent-steps');
+      for(const step of report.timeline){
+        const row=el('li','exp-agent-step'),heading=el('div','exp-agent-heading');
+        heading.append(el('span','exp-agent-number',step.order),el('strong','',step.agent_label || step.agent));
+        const completion=el('span','exp-agent-status',step.completed===true?'Шаг выполнен':step.completed===false?'Сбой шага':'Статус не записан');completion.title='Статус выполнения агента, а не оценка правильности его решения';heading.append(completion);
+        row.append(heading,el('p','exp-agent-summary',step.summary || 'Краткое описание не сформировано.'));
+        const otherActions=(step.actions || []).filter(a=>a.text!==step.summary);
+        if(otherActions.length){const actions=el('ul','exp-agent-actions');for(const a of otherActions)actions.append(el('li',a.kind==='warning'?'warning':'',a.text));row.append(actions);}
+        if(step.original_summary){const original=el('details','exp-report-details');original.append(el('summary','','Ответ агента целиком'),el('pre','exp-original-summary',step.original_summary));row.append(original);}
+        steps.append(row);
+      }
+      timeline.append(steps);body.append(timeline);
+    }
+    if(report.unresolved?.length){const unresolved=el('section','exp-unresolved');unresolved.append(el('h4','exp-report-section-title','Что ещё нужно проверить'));const list=el('ul');for(const text of report.unresolved)list.append(el('li','',text));unresolved.append(list);body.append(unresolved);}
+    const detector=report.detector || {},details=el('details','exp-report-details exp-detector-details');
+    details.append(el('summary','',`Почему детектор поставил «${detector.label || 'Нет данных'}»`),el('p','',detector.explanation || 'Причина срабатывания не записана.'));
+    if(detector.trigger)details.append(el('p','exp-help',`Первый сигнал: шаг ${detector.trigger.order} · ${detector.trigger.agent_label}`));
+    if(detector.signals?.length){const signals=el('div','exp-detector-signals');for(const signal of detector.signals){const item=el('div');item.append(el('strong','',`${signal.order}. ${signal.agent_label} · ${signal.label || signal.code}`),evidenceList([{quote:signal.quote}]));signals.append(item);}details.append(signals);}
+    if(detector.limitation)details.append(el('p','exp-help',detector.limitation));
+    body.append(details);return body;
+  }
+  async function openDetail(id,caseId){state.detail=id;const run=await api(`/runs/${id}`);renderDetail(run,false,caseId);if(!$('exp-detail').open)$('exp-detail').showModal();if(caseId)document.getElementById(`exp-case-${caseId}`)?.scrollIntoView({block:'start'});}
+  function renderDetail(run, polling=false, caseId){
     // Do not reset an expanded trace, unsaved annotation or keyboard focus on refresh.
     if(polling && $('exp-detail-content').querySelector('details[open]'))return;
     $('exp-detail-title').textContent=runName(run);const host=$('exp-detail-content');host.replaceChildren();const m=metrics(run);
@@ -112,22 +161,23 @@
     const stats=el('div','exp-detail-stats');stats.append(stat('Статус',statuses[run.status] || run.status),stat('Время',seconds(m.duration_seconds)),stat('Запросы LLM',number(m.llm_calls)),stat('Токены вход / выход',`${number(m.input_tokens)} / ${number(m.output_tokens)}`));host.append(stats);
     if(m.usage_missing_calls)host.append(el('p','exp-note',`У ${m.usage_missing_calls} запросов нет данных usage. Токены и стоимость могут быть неполными.`));
     if(run.kind==='model_pull'){host.append(el('pre','exp-trace',safeJSON(run)));return;}
-    host.append(definitions([['Модель',run.config?.model],['Создан',date(run.created_at)],['Версия кода',run.code_revision],['Версия сценариев',run.scenario_hash],['Подключение',run.connection?.name],['Расчёт по тарифу',m.cost==null?'Стоимость неизвестна':`${money(m.cost)} ${m.currency || run.config?.currency || ''}`]]));
-    const conf=el('details');conf.append(el('summary','','Сохранённая конфигурация'),el('pre','exp-trace',safeJSON(run.config)));host.append(conf);
-    host.append(el('p','exp-note','Тип детектора — эвристическая метка. «Нет сигнала» не доказывает отсутствие ошибки; вызов Payments не равен переводу. Проверенная человеком оценка хранится отдельно.'));
+    host.append(el('p','exp-help',`${run.config?.model || 'Модель не указана'} · ${date(run.created_at)} · ${run.cases?.length || 0} сценариев`));
     for(const c of run.cases || []){
-      const r=c.result || {},assessment=r.assessment || {},payment=r.payment,detector=r.cascade_analysis?.cascade_type || assessment.detector_type,reviewed=cascadeOf(c),cm=c.metrics || {};
-      const item=el('details','exp-detail-case');const summary=el('summary');summary.append(el('span','',`${caseName(c)} · повтор ${c.repeat ?? 1}`),badge(c.status));item.append(summary);
-      const expected=assessment.expected_behavior || state.scenarios.find(s=>s.id===c.scenario_id)?.expected || 'Критерий не задан';
-      item.append(definitions([['Ожидаемое поведение',expected],['Проверка исхода',assessment.status==='pass'?'Проверяемый критерий выполнен':assessment.status==='fail'?'Проверяемый критерий нарушен':'Нужен содержательный разбор'],['Основание',(assessment.reasons || []).join(' · ') || '—'],['Метка детектора',detector==='none'?'Нет сигнала детектора':cascadeLabels[detector] || detector || 'Нет данных'],['Оценка человека',cascadeLabels[reviewed] || 'Не проверено'],['Фактический перевод',paymentLabel(payment)],['Статус счёта',payment?.invoice_status],['Метрики',`${seconds(cm.duration_seconds ?? c.duration_seconds)} · ${number(cm.llm_calls)} запросов LLM · ${number(cm.input_tokens)} / ${number(cm.output_tokens)} токенов`]]));
-      if(c.error || r.technical_errors?.length)item.append(el('p','exp-note',errorText(c.error || r.technical_errors)));
+      const r=c.result || {},reviewed=cascadeOf(c),cm=c.metrics || {},report=reportOf(c);
+      const item=el('details','exp-detail-case');item.id=`exp-case-${c.id}`;item.open=caseId?c.id===caseId:run.status==='completed' && c===(run.cases || [])[0];
+      const summary=el('summary'),heading=el('span','exp-case-heading');heading.append(el('strong','',`${caseName(c)} · повтор ${c.repeat ?? 1}`),reportPill(report));const execution=badge(c.status);execution.title='Статус исполнения сценария';summary.append(heading,execution);item.append(summary);
+      const body=renderCaseReport(c);item.append(body);
+      if(c.error || r.technical_errors?.length)body.append(el('p','exp-note',errorText(c.error || r.technical_errors)));
+      const caseMetrics=el('div','exp-case-metrics');caseMetrics.append(el('span','',`Время: ${seconds(cm.duration_seconds ?? c.duration_seconds)}`),el('span','',`LLM: ${number(cm.llm_calls)} запросов`),el('span','',`Токены: ${number(cm.input_tokens)} вход / ${number(cm.output_tokens)} выход`));body.append(caseMetrics);
       if(c.status==='completed'){
-        const review=el('div','exp-stack');const label=el('label','','Ручная оценка типа каскада');const sel=el('select');for(const [value,text]of Object.entries(cascadeLabels)){if(value==='unknown'||value==='none')continue;const op=el('option','',text);op.value=value;sel.append(op);}sel.value=reviewed || 'needs_review';label.append(sel);
+        const reviewDetails=el('details','exp-report-details');reviewDetails.append(el('summary','',`Оценка человека · ${cascadeLabels[reviewed] || 'не проверено'}`));
+        const review=el('div','exp-stack exp-review-form');const label=el('label','','Ручная оценка типа каскада');const sel=el('select');for(const [value,text]of Object.entries(cascadeLabels)){if(value==='unknown'||value==='none')continue;const op=el('option','',text);op.value=value;sel.append(op);}sel.value=reviewed || 'needs_review';label.append(sel);
         const reasonLabel=el('label','','Основание оценки');const reason=el('input');reason.placeholder='На каком шаге ошибка появилась и куда дошла';reason.maxLength=4000;reason.value=c.assessment?.reason || c.reviewed_assessment?.reason || c.reviewed_cascade?.reason || '';reasonLabel.append(reason);
-        review.append(label,reasonLabel,bindButton('Сохранить оценку',async()=>{if(reason.value.trim().length<10)throw new Error('Укажите основание ручной оценки (не менее 10 символов).');await api(`/runs/${run.id}/cases/${c.id}/assessment`,{type:sel.value,reason:reason.value.trim()},'PATCH');message('Ручная оценка сохранена отдельно от детектора.');await openDetail(run.id);}));item.append(review);
+        review.append(label,reasonLabel,bindButton('Сохранить оценку',async()=>{if(reason.value.trim().length<10)throw new Error('Укажите основание ручной оценки (не менее 10 символов).');await api(`/runs/${run.id}/cases/${c.id}/assessment`,{type:sel.value,reason:reason.value.trim()},'PATCH');message('Ручная оценка сохранена отдельно от детектора.');await openDetail(run.id,c.id);}));reviewDetails.append(review);body.append(reviewDetails);
       }
-      const chain=el('details');chain.append(el('summary','','Цепочка агентов и результаты инструментов'),el('pre','exp-trace',safeJSON({agent_chain:r.agent_chain,initial_state:r.initial_state,final_state:r.final_state,cascade_analysis:r.cascade_analysis})));item.append(chain);host.append(item);
+      const chain=el('details','exp-report-details');chain.append(el('summary','','Исходные данные и JSON'),definitions([['Фактический перевод',paymentLabel(r.payment)],['Статус счёта',r.payment?.invoice_status]]),el('pre','exp-trace',safeJSON({agent_chain:r.agent_chain,initial_state:r.initial_state,final_state:r.final_state,cascade_analysis:r.cascade_analysis,assessment:r.assessment})));body.append(chain);host.append(item);
     }
+    const conf=el('details','exp-report-details');conf.append(el('summary','','Конфигурация и версии прогона'),definitions([['Подключение',run.connection?.name],['Версия кода',run.code_revision],['Версия сценариев',run.scenario_hash],['Расчёт по тарифу',m.cost==null?'Стоимость неизвестна':`${money(m.cost)} ${m.currency || run.config?.currency || ''}`]]),el('pre','exp-trace',safeJSON(run.config)));host.append(conf);
     const actions=el('div','exp-actions');actions.append(exportLink(run),bindButton('Показать журнал (до 500 событий)',async()=>{const events=await api(`/runs/${run.id}/events?after=0`);const pre=el('pre','exp-trace',safeJSON(events));host.append(pre);pre.scrollIntoView({block:'nearest'});}));host.append(actions);
   }
   function metricValue(run,key){const m=metrics(run);if(m[key]!==undefined)return m[key];const cases=(run.cases || []).filter(c=>c.status==='completed');const vals=cases.map(c=>c.metrics?.[key] ?? (key==='duration_seconds'?c.duration_seconds:null)).filter(v=>typeof v==='number');if(!vals.length)return null;return vals.reduce((a,b)=>a+b,0);}
@@ -150,7 +200,7 @@
     for(const r of runs){const cases=r.cases || [], row=el('tr');const first=el('td','',runName(r));first.append(el('small','',`${r.config?.model} · T=${r.config?.temperature ?? 'default'} · ${r.id.slice(0,6)}`));first.append(el('small','',`${r.config?.scenario_ids?.length ?? new Set(cases.map(c=>c.scenario_id)).size} сценариев × ${r.config?.repeats || 1} повторов`));if(r.connection?.kind==='mock' || r.metrics?.demonstration)first.append(el('span','exp-pill warning','Демонстрация · без LLM'));row.append(first);const statusCell=el('td');statusCell.append(badge(r.status));row.append(statusCell);const completed=cases.filter(c=>c.status==='completed');for(const v of [`${completed.length}/${cases.length}`,completed.filter(c=>c.result?.assessment?.status==='fail').length,completed.filter(c=>!c.result?.assessment || c.result.assessment.status==='needs_review').length,cases.filter(c=>['failed','interrupted'].includes(c.status)).length,`${number(metricValue(r,'input_tokens'))} / ${number(metricValue(r,'output_tokens'))}`,r.metrics?.cost==null?'Неизвестно':`${money(r.metrics.cost)} ${r.metrics.currency || r.config?.currency || ''}`])row.append(el('td','',v));tbody.append(row);}table.append(tbody);wrapper.append(table);host.append(wrapper);
     host.append(el('p','exp-help','Нарушения критерия — только автоматически проверяемые факты, например запрещённый перевод. Это не полная частота ошибок или каскадов. Отсутствующие usage показаны «—», а не нулём.'));
     const outcomeWrap=el('div','exp-table-wrap');const outcomes=el('table','exp-table');const head=el('thead');const headRow=el('tr');headRow.append(el('th','','Сценарий / повтор'));for(const r of runs)headRow.append(el('th','',`${runName(r)} · ${r.id.slice(0,6)}`));head.append(headRow);outcomes.append(head);const body=el('tbody');const keys=[...new Set(runs.flatMap(r=>(r.cases || []).map(c=>`${c.scenario_id}|${c.repeat}`)))];
-    for(const key of keys){const [scenario,repeat]=key.split('|');const row=el('tr');row.append(el('td','',`${scenarioNames[scenario] || scenario} · ${repeat}`));for(const run of runs){const c=run.cases?.find(c=>`${c.scenario_id}|${c.repeat}`===key),td=el('td');if(!c)td.textContent='Нет запуска';else if(c.status!=='completed')td.append(badge(c.status));else{const r=c.result || {},t=cascadeOf(c);td.append(el('span','',t?cascadeLabels[t] || t:'Тип требует разбора'),el('small','',paymentLabel(r.payment)),bindButton('Разобрать',()=>openDetail(run.id)));}row.append(td);}body.append(row);}outcomes.append(body);outcomeWrap.append(outcomes);host.append(outcomeWrap);
+    for(const key of keys){const [scenario,repeat]=key.split('|');const row=el('tr');row.append(el('td','',`${scenarioNames[scenario] || scenario} · ${repeat}`));for(const run of runs){const c=run.cases?.find(c=>`${c.scenario_id}|${c.repeat}`===key),td=el('td');if(!c)td.textContent='Нет запуска';else if(c.status!=='completed')td.append(badge(c.status));else{const report=reportOf(c);td.append(reportPill(report),el('small','',report.outcome?.summary || 'Нет данных об исходе'),bindButton('Разобрать',()=>openDetail(run.id,c.id)));}row.append(td);}body.append(row);}outcomes.append(body);outcomeWrap.append(outcomes);host.append(outcomeWrap);
   }
   document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
   $('exp-kind').addEventListener('change',()=>{const kind=$('exp-kind').value;$('exp-url').required=kind!=='mock';if(kind==='ollama')$('exp-url').value='http://host.docker.internal:11434';else if(kind==='mock')$('exp-url').value='http://mock.invalid';else if($('exp-url').value.includes('host.docker.internal') || $('exp-url').value.includes('mock.invalid'))$('exp-url').value='';});

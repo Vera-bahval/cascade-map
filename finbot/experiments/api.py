@@ -20,6 +20,7 @@ from finbot.experiments.schemas import (
     AssessmentInput,
 )
 from finbot.experiments.store import Store, stamp
+from finbot.experiments.reporting import enrich_report
 
 router = APIRouter(prefix="/api/v1/experiments", tags=["experiments"])
 ROOT = Path(__file__).resolve().parents[2]
@@ -273,7 +274,8 @@ async def run(
     session: SessionContext = Depends(get_session_context),
     store: Store = Depends(get_store),
 ):
-    return lookup(store.get_job, job_id, owner(session))
+    job = lookup(store.get_job, job_id, owner(session))
+    return enrich_report(job, store.report_events(job_id))
 
 
 @router.post("/runs/{job_id}/cancel")
@@ -312,7 +314,7 @@ async def export(
         all_events.extend(batch)
         after = batch[-1]["seq"]
     return JSONResponse(
-        {"run": job, "events": all_events},
+        {"run": enrich_report(job, all_events), "events": all_events},
         headers={"Content-Disposition": f'attachment; filename="experiment-{job["id"]}.json"'},
     )
 

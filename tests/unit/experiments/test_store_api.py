@@ -161,3 +161,50 @@ def test_api_forbids_cross_owner_and_unbounded_pull(client, store):
         json={"connection_id": c["id"], "model": "arbitrary/remote-model"},
     )
     assert r.status_code == 422
+
+
+def test_report_and_export_explain_saved_cases_without_mutating_them(client, store):
+    own = job(store, '["ns","user"]')
+    case_id = own["cases"][0]["id"]
+    store.update_case(
+        own["id"],
+        case_id,
+        status="completed",
+        result={
+            "demonstration": True,
+            "agent_chain": [
+                {
+                    "agent": "invoice_agent",
+                    "order": 1,
+                    "success": True,
+                    "reasoning": "Done",
+                    "errors": [],
+                }
+            ],
+        },
+    )
+    tool = {
+        "event_type": "tool_call_success",
+        "case_id": case_id,
+        "agent_name": "invoice_agent",
+        "event_data": {
+            "tool_name": "update_invoice_status",
+            "tool_output": {"updated": True, "status": "approved"},
+        },
+    }
+    store.append_event(own["id"], tool)
+    store.append_event(
+        own["id"],
+        {"event_type": "llm_call_success", "case_id": case_id, "large_prompt": "excluded"},
+    )
+    before = store.get_job(own["id"])
+    assert len(store.report_events(own["id"])) == 1
+    response = client.get("/api/v1/experiments/runs/" + own["id"])
+    assert response.status_code == 200
+    report = response.json()["cases"][0]["report"]
+    assert report["cascade"]["status"] == "not_evaluated"
+    assert "одобрен" in report["timeline"][0]["summary"]
+    exported = client.get("/api/v1/experiments/runs/" + own["id"] + "/export").json()
+    assert report == exported["run"]["cases"][0]["report"]
+    assert "secret-never-export" not in response.text
+    assert store.get_job(own["id"]) == before

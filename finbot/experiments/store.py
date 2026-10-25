@@ -283,6 +283,17 @@ class Store:
             ).fetchall()
         return [{"seq": r[0], **json.loads(r[1])} for r in rows]
 
+    def report_events(self, job_id):
+        from finbot.experiments.reporting import REPORT_EVENTS
+
+        placeholders = ",".join("?" for _ in REPORT_EVENTS)
+        with self.db() as db:
+            rows = db.execute(
+                f"SELECT seq,data FROM events WHERE job_id=? AND json_extract(data, '$.event_type') IN ({placeholders}) ORDER BY seq",
+                (job_id, *REPORT_EVENTS),
+            ).fetchall()
+        return [{"seq": r[0], **json.loads(r[1])} for r in rows]
+
     def claim_job(self, worker_id):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
