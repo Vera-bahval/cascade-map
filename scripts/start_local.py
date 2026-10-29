@@ -31,7 +31,7 @@ def available_port(host, first):
     raise RuntimeError("Не найден свободный порт")
 
 
-def stop_processes(processes):
+def stop_processes(processes, timeout=15):
     for process in reversed(processes):
         if process.poll() is None:
             try:
@@ -41,7 +41,7 @@ def stop_processes(processes):
                     process.terminate()
             except ProcessLookupError:
                 pass
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + timeout
     for process in reversed(processes):
         try:
             process.wait(timeout=max(0, deadline - time.monotonic()))
@@ -56,7 +56,7 @@ def stop_processes(processes):
             process.wait()
 
 
-def serve(host, port, environment):
+def serve(host, port, environment, *, container=False):
     processes = []
     stopping = False
 
@@ -77,16 +77,33 @@ def serve(host, port, environment):
         return process
 
     try:
-        bootstrap = start(["scripts/bootstrap.py"])
-        while bootstrap.poll() is None and not stopping:
-            time.sleep(0.1)
-        if stopping:
-            return 0
-        if bootstrap.returncode:
-            return bootstrap.returncode
+        if not container:
+            bootstrap = start(["scripts/bootstrap.py"])
+            while bootstrap.poll() is None and not stopping:
+                time.sleep(0.1)
+            if stopping:
+                return 0
+            if bootstrap.returncode:
+                return bootstrap.returncode
 
-        web = start(
-            [
+        if container:
+            web_arguments = [
+                "-m",
+                "gunicorn",
+                "finbot.main:app",
+                "-k",
+                "uvicorn.workers.UvicornWorker",
+                "--bind",
+                f"{host}:{port}",
+                "--workers",
+                environment.get("WEB_CONCURRENCY", "3"),
+                "--timeout",
+                "300",
+                "--graceful-timeout",
+                "60",
+            ]
+        else:
+            web_arguments = [
                 "-m",
                 "uvicorn",
                 "finbot.main:app",
@@ -97,7 +114,7 @@ def serve(host, port, environment):
                 "--log-level",
                 "warning",
             ]
-        )
+        web = start(web_arguments)
         worker = start(["-m", "finbot.experiments.worker"])
         display_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
         if ":" in display_host:
@@ -113,7 +130,10 @@ def serve(host, port, environment):
             time.sleep(0.2)
         return 0
     finally:
-        stop_processes(processes)
+        if container:
+            stop_processes(processes, timeout=65)
+        else:
+            stop_processes(processes)
         for sig, handler in handlers.items():
             signal.signal(sig, handler)
 
@@ -122,11 +142,19 @@ def main():
     from finbot.config import settings
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=settings.PORT)
+    parser.add_argument("--container", action="store_true", help="Run behind the Docker entrypoint")
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
     args = parser.parse_args()
+    args.host = args.host or ("0.0.0.0" if args.container else "127.0.0.1")
+    args.port = args.port if args.port is not None else (8000 if args.container else settings.PORT)
     try:
-        port = available_port(args.host, args.port)
+        if args.container:
+            if not 1 <= args.port <= 65535:
+                raise ValueError("Порт должен быть от 1 до 65535")
+            port = args.port
+        else:
+            port = available_port(args.host, args.port)
     except (ValueError, OSError, RuntimeError) as exc:
         parser.exit(1, f"Не удалось выбрать порт: {exc}\n")
     host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(args.host, args.host)
@@ -136,13 +164,14 @@ def main():
         **os.environ,
         "HOST": args.host,
         "PORT": str(port),
-        "MAGIC_LINK_BASE_URL": f"http://{host}:{port}",
         "PYTHONUNBUFFERED": "1",
     }
+    if not args.container:
+        environment["MAGIC_LINK_BASE_URL"] = f"http://{host}:{port}"
     environment.setdefault("LOG_LEVEL", "WARNING")
     if port != args.port:
         print(f"Порт {args.port} занят, используется {port}.", flush=True)
-    return serve(args.host, port, environment)
+    return serve(args.host, port, environment, container=args.container)
 
 
 if __name__ == "__main__":

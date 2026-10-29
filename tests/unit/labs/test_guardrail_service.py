@@ -42,14 +42,13 @@ def service(session):
 
 
 class TestConfigCaching:
-    def test_no_config_returns_no_config_outcome(self, service):
-        import asyncio
-        outcome = asyncio.get_event_loop().run_until_complete(
-            service.invoke(HookKind.before_tool, tool_name="test_tool")
-        )
+    @pytest.mark.asyncio
+    async def test_no_config_returns_no_config_outcome(self, service):
+        outcome = await service.invoke(HookKind.before_tool, tool_name="test_tool")
         assert outcome == HookOutcome.no_config
 
-    def test_disabled_hook_returns_hook_disabled(self, db, session, config_repo):
+    @pytest.mark.asyncio
+    async def test_disabled_hook_returns_hook_disabled(self, db, session, config_repo):
         config_repo.upsert(
             webhook_url="https://example.com/hook",
             hooks={"before_tool": False, "after_tool": True,
@@ -57,10 +56,7 @@ class TestConfigCaching:
         )
         svc = GuardrailHookService(session_context=session, workflow_id="wf_test")
 
-        import asyncio
-        outcome = asyncio.get_event_loop().run_until_complete(
-            svc.invoke(HookKind.before_tool, tool_name="test_tool")
-        )
+        outcome = await svc.invoke(HookKind.before_tool, tool_name="test_tool")
         assert outcome == HookOutcome.hook_disabled
 
     def test_config_loaded_once(self, db, session, config_repo):
