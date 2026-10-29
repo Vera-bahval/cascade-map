@@ -1,0 +1,198 @@
+{% extends 'base.html' %}
+
+{% block title %}Payments - FinBot Vendor Portal{% endblock %}
+
+{% block meta_description %}Track payments, manage banking details, and view transaction history with AI-powered payment processing.{% endblock %}
+
+{% block nav_payments %}active{% endblock %}
+
+{% block page_title %}Payment Processing{% endblock %}
+{% block page_subtitle %}Track payments, manage banking details, and view transaction history{% endblock %}
+
+{% block header_actions %}
+<button id="request-payment-btn" class="vendor-btn quantum-accent">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+    </svg>
+    Request Payment
+</button>
+<a href="/vendor/assistant" class="vendor-btn quantum-primary">
+    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"/>
+    </svg>
+    AI Assistant
+</a>
+{% endblock %}
+
+{% block content %}
+<!-- Payment Stats -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+    <div class="neural-metric" data-no-animate>
+        <div class="metric-icon">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+        </div>
+        <div id="stat-total-paid" class="metric-value">$0</div>
+        <div class="metric-label">Total Paid</div>
+    </div>
+
+    <div class="neural-metric" data-no-animate>
+        <div class="metric-icon">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+        </div>
+        <div id="stat-pending-amount" class="metric-value">$0</div>
+        <div class="metric-label">Pending</div>
+    </div>
+
+    <div class="neural-metric" data-no-animate>
+        <div class="metric-icon">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+            </svg>
+        </div>
+        <div id="stat-txn-count" class="metric-value">0</div>
+        <div class="metric-label">Transactions</div>
+    </div>
+
+    <div class="neural-metric" data-no-animate>
+        <div class="metric-icon">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+        </div>
+        <div id="stat-failed-count" class="metric-value">0</div>
+        <div class="metric-label">Failed</div>
+    </div>
+</div>
+
+<!-- Transaction History -->
+<div class="holo-card">
+    <div class="holo-header">
+        <div class="flex items-center justify-between">
+            <h2 class="text-xl font-bold text-text-bright">Transaction History</h2>
+            <div class="flex items-center space-x-2">
+                <span id="txn-provider-badge" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-vendor-accent/10 text-vendor-accent border border-vendor-accent/30">
+                    <svg class="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                    FinStripe
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div class="holo-body">
+        <div class="overflow-x-auto">
+            <table class="neural-table">
+                <thead>
+                    <tr>
+                        <th>Transfer ID</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Status</th>
+                        <th>Description</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody id="transactions-table-body">
+                    <tr class="loading-row">
+                        <td colspan="6" class="text-center py-8">
+                            <div class="flex items-center justify-center space-x-3">
+                                <svg class="animate-spin h-5 w-5 text-vendor-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                <span class="text-text-secondary">Loading transactions...</span>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Empty State -->
+        <div id="transactions-empty-state" class="hidden text-center py-12">
+            <svg class="w-16 h-16 mx-auto text-text-secondary mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/>
+            </svg>
+            <h3 class="text-lg font-medium text-text-bright mb-2">No transactions yet</h3>
+            <p class="text-text-secondary mb-4">Payment transactions will appear here once invoices are processed</p>
+            <a href="/vendor/invoices" class="vendor-btn quantum-primary">
+                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                View Invoices
+            </a>
+        </div>
+
+        <!-- Footer -->
+        <div class="flex items-center justify-between mt-6 pt-6 border-t border-vendor-primary/20">
+            <div class="text-sm text-text-secondary">
+                Showing recent transactions
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+.txn-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.025em;
+}
+
+.txn-status.completed {
+    background: rgba(6, 255, 165, 0.15);
+    color: #06ffa5;
+    border: 1px solid rgba(6, 255, 165, 0.3);
+}
+
+.txn-status.pending {
+    background: rgba(255, 184, 0, 0.15);
+    color: #ffb800;
+    border: 1px solid rgba(255, 184, 0, 0.3);
+}
+
+.txn-status.failed {
+    background: rgba(255, 51, 102, 0.15);
+    color: #ff3366;
+    border: 1px solid rgba(255, 51, 102, 0.3);
+}
+
+.transfer-id {
+    font-family: 'Courier New', monospace;
+    font-size: 0.8rem;
+    color: var(--vendor-primary);
+    background: rgba(0, 212, 255, 0.08);
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgba(0, 212, 255, 0.15);
+}
+
+.method-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.6rem;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    text-transform: capitalize;
+}
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', path='js/vendor/payments.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,1051 @@
+/**
+ * FinBot Common Utilities
+ * Shared JavaScript utilities across all apps
+ * Contains reusable utility functions for DOM manipulation, formatting, validation, etc.
+ */
+
+/**
+ * Parse an ISO timestamp as UTC.  If the string has no timezone indicator,
+ * append 'Z' so the browser doesn't interpret it as local time.
+ */
+function parseUTCDate(ts) {
+    if (!ts) return new Date();
+    const s = String(ts);
+    if (!s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s)) return new Date(s + 'Z');
+    return new Date(s);
+}
+
+/**
+ * DOM Ready utility
+ */
+function ready(fn) {
+    if (document.readyState !== 'loading') {
+        fn();
+    } else {
+        document.addEventListener('DOMContentLoaded', fn);
+    }
+}
+
+/**
+ * Debounce function calls
+ */
+function debounce(func, wait, immediate = false) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            timeout = null;
+            if (!immediate) func.apply(this, args);
+        };
+        const callNow = immediate && !timeout;
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+        if (callNow) func.apply(this, args);
+    };
+}
+
+/**
+ * Throttle function calls
+ */
+function throttle(func, limit) {
+    let inThrottle;
+    return function (...args) {
+        if (!inThrottle) {
+            func.apply(this, args);
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
+        }
+    };
+}
+
+/**
+ * Format currency
+ */
+function formatCurrency(amount, currency = 'USD', locale = 'en-US') {
+    return new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency: currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }).format(amount);
+}
+
+/**
+ * Format number with commas
+ */
+function formatNumber(number, decimals = 0) {
+    return new Intl.NumberFormat('en-US', {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+    }).format(number);
+}
+
+/**
+ * Format date
+ */
+function formatDate(date, options = {}) {
+    const defaultOptions = {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+    };
+
+    const formatOptions = { ...defaultOptions, ...options };
+    return new Intl.DateTimeFormat('en-US', formatOptions).format(parseUTCDate(date));
+}
+
+/**
+ * Format relative time (e.g., "2 hours ago")
+ */
+function formatRelativeTime(date) {
+    const now = new Date();
+    const diffInSeconds = Math.floor((now - parseUTCDate(date)) / 1000);
+
+    const intervals = {
+        year: 31536000,
+        month: 2592000,
+        week: 604800,
+        day: 86400,
+        hour: 3600,
+        minute: 60
+    };
+
+    for (const [unit, seconds] of Object.entries(intervals)) {
+        const interval = Math.floor(diffInSeconds / seconds);
+        if (interval >= 1) {
+            return `${interval} ${unit}${interval > 1 ? 's' : ''} ago`;
+        }
+    }
+
+    return 'Just now';
+}
+
+/**
+ * Validate email address
+ */
+function isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+}
+
+/**
+ * Validate password strength
+ */
+function validatePassword(password) {
+    const result = {
+        isValid: false,
+        score: 0,
+        feedback: []
+    };
+
+    if (password.length < 8) {
+        result.feedback.push('Password must be at least 8 characters long');
+    } else {
+        result.score += 1;
+    }
+
+    if (!/[a-z]/.test(password)) {
+        result.feedback.push('Password must contain at least one lowercase letter');
+    } else {
+        result.score += 1;
+    }
+
+    if (!/[A-Z]/.test(password)) {
+        result.feedback.push('Password must contain at least one uppercase letter');
+    } else {
+        result.score += 1;
+    }
+
+    if (!/\d/.test(password)) {
+        result.feedback.push('Password must contain at least one number');
+    } else {
+        result.score += 1;
+    }
+
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) {
+        result.feedback.push('Password should contain at least one special character');
+    } else {
+        result.score += 1;
+    }
+
+    result.isValid = result.score >= 4;
+    return result;
+}
+
+/**
+ * Validate TIN/EIN (Tax Identification Number/Employer Identification Number)
+ * Supports both formats: XX-XXXXXXX and XXXXXXXXX
+ */
+function validateTIN(tin) {
+    if (!tin) return { isValid: false, message: 'TIN/EIN is required' };
+
+    // Remove all non-digits for validation
+    const cleanTIN = tin.replace(/\D/g, '');
+
+    // Check if it's 9 digits
+    if (cleanTIN.length !== 9) {
+        return {
+            isValid: false,
+            message: 'TIN/EIN must be 9 digits'
+        };
+    }
+
+    // Check format: either XXXXXXXXX or XX-XXXXXXX
+    const tinRegex = /^\d{2}-?\d{7}$/;
+    if (!tinRegex.test(tin)) {
+        return {
+            isValid: false,
+            message: 'Please enter a valid TIN/EIN format (XX-XXXXXXX or XXXXXXXXX)'
+        };
+    }
+
+    return { isValid: true, message: '' };
+}
+
+/**
+ * Validate US Bank Account Number
+ * Typically 8-17 digits, but can vary by bank
+ */
+function validateBankAccount(accountNumber) {
+    if (!accountNumber) return { isValid: false, message: 'Bank account number is required' };
+
+    // Remove all non-digits
+    const cleanAccount = accountNumber.replace(/\D/g, '');
+
+    // Check length (most US bank accounts are 8-17 digits)
+    if (cleanAccount.length < 8 || cleanAccount.length > 17) {
+        return {
+            isValid: false,
+            message: 'Bank account number should be 8-17 digits'
+        };
+    }
+
+    // Basic format check - should be all digits
+    if (!/^\d+$/.test(cleanAccount)) {
+        return {
+            isValid: false,
+            message: 'Bank account number should contain only digits'
+        };
+    }
+
+    return { isValid: true, message: '' };
+}
+
+/**
+ * Validate US Bank Routing Number
+ * Must be exactly 9 digits and pass checksum validation
+ */
+function validateRoutingNumber(routingNumber) {
+    if (!routingNumber) return { isValid: false, message: 'Routing number is required' };
+
+    // Remove all non-digits
+    const cleanRouting = routingNumber.replace(/\D/g, '');
+
+    // Must be exactly 9 digits
+    if (cleanRouting.length !== 9) {
+        return {
+            isValid: false,
+            message: 'Routing number must be exactly 9 digits'
+        };
+    }
+
+    return { isValid: true, message: '' };
+}
+
+/**
+ * Format TIN/EIN with standard formatting (XX-XXXXXXX)
+ */
+function formatTIN(tin) {
+    const cleanTIN = tin.replace(/\D/g, '');
+    if (cleanTIN.length === 9) {
+        return `${cleanTIN.slice(0, 2)}-${cleanTIN.slice(2)}`;
+    }
+    return tin;
+}
+
+/**
+ * Format routing number (adds spaces for readability: XXX XXX XXX)
+ */
+function formatRoutingNumber(routingNumber) {
+    const cleanRouting = routingNumber.replace(/\D/g, '');
+    if (cleanRouting.length === 9) {
+        return `${cleanRouting.slice(0, 3)} ${cleanRouting.slice(3, 6)} ${cleanRouting.slice(6)}`;
+    }
+    return routingNumber;
+}
+
+/**
+ * Generate random ID
+ */
+function generateId(prefix = 'id', length = 8) {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = prefix + '-';
+    for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+/**
+ * Copy text to clipboard
+ */
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch (err) {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+
+        try {
+            document.execCommand('copy');
+            textArea.remove();
+            return true;
+        } catch (err) {
+            textArea.remove();
+            return false;
+        }
+    }
+}
+
+/**
+ * Smooth scroll to element
+ */
+function scrollToElement(element, offset = 0) {
+    const targetElement = typeof element === 'string'
+        ? document.querySelector(element)
+        : element;
+
+    if (!targetElement) return;
+
+    const elementPosition = targetElement.getBoundingClientRect().top;
+    const offsetPosition = elementPosition + window.pageYOffset - offset;
+
+    window.scrollTo({
+        top: offsetPosition,
+        behavior: 'smooth'
+    });
+}
+
+/**
+ * Check if element is in viewport
+ */
+function isInViewport(element, threshold = 0) {
+    const rect = element.getBoundingClientRect();
+    const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+    const windowWidth = window.innerWidth || document.documentElement.clientWidth;
+
+    return (
+        rect.top >= -threshold &&
+        rect.left >= -threshold &&
+        rect.bottom <= windowHeight + threshold &&
+        rect.right <= windowWidth + threshold
+    );
+}
+
+/**
+ * Local storage helpers with JSON support
+ */
+const storage = {
+    set(key, value) {
+        try {
+            localStorage.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (e) {
+            console.error('Failed to save to localStorage:', e);
+            return false;
+        }
+    },
+
+    get(key, defaultValue = null) {
+        try {
+            const item = localStorage.getItem(key);
+            return item ? JSON.parse(item) : defaultValue;
+        } catch (e) {
+            console.error('Failed to read from localStorage:', e);
+            return defaultValue;
+        }
+    },
+
+    remove(key) {
+        try {
+            localStorage.removeItem(key);
+            return true;
+        } catch (e) {
+            console.error('Failed to remove from localStorage:', e);
+            return false;
+        }
+    },
+
+    clear() {
+        try {
+            localStorage.clear();
+            return true;
+        } catch (e) {
+            console.error('Failed to clear localStorage:', e);
+            return false;
+        }
+    }
+};
+
+/**
+ * URL helpers
+ */
+const url = {
+    getParam(name) {
+        const urlParams = new URLSearchParams(window.location.search);
+        return urlParams.get(name);
+    },
+
+    setParam(name, value) {
+        const urlParams = new URLSearchParams(window.location.search);
+        urlParams.set(name, value);
+        const newUrl = `${window.location.pathname}?${urlParams.toString()}`;
+        window.history.replaceState({}, '', newUrl);
+    },
+
+    removeParam(name) {
+        const urlParams = new URLSearchParams(window.location.search);
+        urlParams.delete(name);
+        const newUrl = urlParams.toString()
+            ? `${window.location.pathname}?${urlParams.toString()}`
+            : window.location.pathname;
+        window.history.replaceState({}, '', newUrl);
+    }
+};
+
+/**
+ * Device detection
+ */
+const device = {
+    isMobile() {
+        return window.innerWidth <= 768;
+    },
+
+    isTablet() {
+        return window.innerWidth > 768 && window.innerWidth <= 1024;
+    },
+
+    isDesktop() {
+        return window.innerWidth > 1024;
+    },
+
+    isTouchDevice() {
+        return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    }
+};
+
+/**
+ * Form validation helpers
+ */
+function validateForm(form) {
+    const errors = {};
+    const formData = new FormData(form);
+
+    // Get all form fields
+    const fields = form.querySelectorAll('input, select, textarea');
+
+    fields.forEach(field => {
+        const value = formData.get(field.name);
+        const fieldErrors = [];
+
+        // Required validation
+        if (field.hasAttribute('required') && (!value || value.trim() === '')) {
+            fieldErrors.push(`${field.name} is required`);
+        }
+
+        // Email validation
+        if (field.type === 'email' && value && !isValidEmail(value)) {
+            fieldErrors.push('Please enter a valid email address');
+        }
+
+        // Password validation
+        if (field.type === 'password' && value) {
+            const passwordValidation = validatePassword(value);
+            if (!passwordValidation.isValid) {
+                fieldErrors.push(...passwordValidation.feedback);
+            }
+        }
+
+        // Min/Max length validation
+        if (field.minLength && field.minLength > 0 && value && value.length < field.minLength) {
+            fieldErrors.push(`${field.name} must be at least ${field.minLength} characters`);
+        }
+
+        if (field.maxLength && field.maxLength > 0 && value && value.length > field.maxLength) {
+            fieldErrors.push(`${field.name} must be no more than ${field.maxLength} characters`);
+        }
+
+        if (fieldErrors.length > 0) {
+            errors[field.name] = fieldErrors;
+        }
+    });
+
+    return {
+        isValid: Object.keys(errors).length === 0,
+        errors
+    };
+}
+
+/**
+ * Show form field errors
+ */
+function showFieldError(field, message) {
+    clearFieldError(field);
+
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'field-error text-red-400 text-sm mt-1';
+    errorDiv.textContent = message;
+
+    field.classList.add('border-red-400');
+    field.parentNode.appendChild(errorDiv);
+}
+
+
+/**
+ * Clear form field errors
+ */
+function clearFieldError(field) {
+    field.classList.remove('border-red-400');
+    const existingError = field.parentNode.querySelector('.field-error');
+    if (existingError) {
+        existingError.remove();
+    }
+}
+
+/**
+ * Clear all form field errors
+ */
+function clearAllFieldErrors(form) {
+    const errorElements = form.querySelectorAll('.field-error');
+    errorElements.forEach(error => error.remove());
+
+    const errorFields = form.querySelectorAll('.border-red-400');
+    errorFields.forEach(field => field.classList.remove('border-red-400'));
+}
+
+
+
+
+/**
+ * Show loading state on element
+ */
+function showLoading(element, text = 'Loading...') {
+    element.classList.add('loading');
+    const originalHTML = element.innerHTML;
+    element.textContent = text;
+    element.disabled = true;
+
+    return () => {
+        element.classList.remove('loading');
+        element.innerHTML = originalHTML;
+        element.disabled = false;
+    };
+}
+
+/**
+ * Animate counter with easing and formatting
+ */
+function animateCounter(element, start, end, duration, formatter = null) {
+    const startTime = performance.now();
+    const originalText = element.textContent;
+
+    function updateCounter(currentTime) {
+        const elapsed = currentTime - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+
+        // Easing function (ease-out cubic)
+        const easeOut = 1 - Math.pow(1 - progress, 3);
+        const current = Math.floor(start + (end - start) * easeOut);
+
+        // Apply custom formatter or use original formatting
+        if (formatter && typeof formatter === 'function') {
+            element.textContent = formatter(current);
+        } else {
+            // Try to preserve original formatting
+            const isPercentage = originalText.includes('%');
+            const isCurrency = originalText.includes('$');
+
+            let displayValue = current.toLocaleString();
+
+            if (isCurrency) {
+                displayValue = '$' + displayValue;
+            } else if (isPercentage) {
+                displayValue = displayValue + '%';
+            }
+
+            element.textContent = displayValue;
+        }
+
+        if (progress < 1) {
+            requestAnimationFrame(updateCounter);
+        } else {
+            element.textContent = originalText; // Ensure final value is exact
+        }
+    }
+
+    requestAnimationFrame(updateCounter);
+}
+
+/**
+ * Generic sidebar management utility
+ *
+ * Handles two distinct behaviors:
+ * - Mobile (<= 768px): slide-in/out overlay (existing)
+ * - Desktop (> 768px): collapse to icon-only rail with localStorage persistence
+ */
+const sidebar = {
+    STORAGE_KEY: 'finbot:sidebar-collapsed',
+
+    state: {
+        isOpen: false,
+        isCollapsed: false,
+        overlay: null,
+        toggleButton: null,
+        sidebarSelector: '#sidebar'
+    },
+
+    init(sidebarSelector = '#sidebar', options = {}) {
+        const defaultOptions = {
+            createToggle: true,
+            createOverlay: true,
+            toggleClass: 'sidebar-toggle',
+            overlayClass: 'sidebar-overlay'
+        };
+
+        const config = { ...defaultOptions, ...options };
+        const sidebarElement = document.querySelector(sidebarSelector);
+
+        if (!sidebarElement) return false;
+
+        this.state.sidebarSelector = sidebarSelector;
+
+        if (config.createToggle && !this.state.toggleButton) {
+            this.createToggleButton(config.toggleClass);
+        }
+
+        if (config.createOverlay && !this.state.overlay) {
+            this.createOverlay(config.overlayClass);
+        }
+
+        this._restoreCollapsedState(sidebarElement);
+
+        return true;
+    },
+
+    createToggleButton(className) {
+        const toggleButton = document.createElement('button');
+        toggleButton.className = className;
+        toggleButton.innerHTML = `
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+        `;
+        toggleButton.addEventListener('click', () => this.toggle());
+        document.body.appendChild(toggleButton);
+        this.state.toggleButton = toggleButton;
+    },
+
+    createOverlay(className) {
+        const overlay = document.createElement('div');
+        overlay.className = className;
+        overlay.addEventListener('click', () => this.close());
+        document.body.appendChild(overlay);
+        this.state.overlay = overlay;
+    },
+
+    // --- Mobile slide-in/out ---
+
+    toggle(sidebarSelector) {
+        if (this.state.isOpen) {
+            this.close(sidebarSelector);
+        } else {
+            this.open(sidebarSelector);
+        }
+    },
+
+    open(sidebarSelector) {
+        const sel = sidebarSelector || this.state.sidebarSelector;
+        const sidebarElement = document.querySelector(sel);
+        if (!sidebarElement) return;
+
+        this.state.isOpen = true;
+        sidebarElement.classList.add('open');
+
+        if (this.state.overlay) {
+            this.state.overlay.classList.add('show');
+        }
+
+        if (this.state.toggleButton) {
+            this.state.toggleButton.classList.add('hidden');
+        }
+    },
+
+    close(sidebarSelector) {
+        const sel = sidebarSelector || this.state.sidebarSelector;
+        const sidebarElement = document.querySelector(sel);
+        if (!sidebarElement) return;
+
+        this.state.isOpen = false;
+        sidebarElement.classList.remove('open');
+
+        if (this.state.overlay) {
+            this.state.overlay.classList.remove('show');
+        }
+
+        if (this.state.toggleButton) {
+            this.state.toggleButton.classList.remove('hidden');
+        }
+    },
+
+    // --- Desktop collapse/expand ---
+
+    toggleCollapse() {
+        const sidebarElement = document.querySelector(this.state.sidebarSelector);
+        if (!sidebarElement) return;
+
+        if (this.state.isCollapsed) {
+            this.expand(sidebarElement);
+        } else {
+            this.collapse(sidebarElement);
+        }
+    },
+
+    collapse(el) {
+        const sidebarElement = el || document.querySelector(this.state.sidebarSelector);
+        if (!sidebarElement) return;
+
+        this.state.isCollapsed = true;
+        sidebarElement.classList.add('collapsed');
+        try { localStorage.setItem(this.STORAGE_KEY, '1'); } catch (_) {}
+    },
+
+    expand(el) {
+        const sidebarElement = el || document.querySelector(this.state.sidebarSelector);
+        if (!sidebarElement) return;
+
+        this.state.isCollapsed = false;
+        sidebarElement.classList.remove('collapsed');
+        try { localStorage.setItem(this.STORAGE_KEY, '0'); } catch (_) {}
+    },
+
+    _restoreCollapsedState(sidebarElement) {
+        try {
+            if (localStorage.getItem(this.STORAGE_KEY) === '1') {
+                this.state.isCollapsed = true;
+                sidebarElement.classList.add('collapsed');
+            }
+        } catch (_) {}
+    }
+};
+
+/**
+ * Loading state management utility
+ */
+const loadingState = {
+    show(element, options = {}) {
+        const defaultOptions = {
+            opacity: '0.7',
+            pointerEvents: 'none',
+            text: null,
+            disable: true
+        };
+
+        const config = { ...defaultOptions, ...options };
+
+        if (typeof element === 'string') {
+            element = document.querySelector(element);
+        }
+
+        if (!element) return null;
+
+        // Store original state
+        const originalState = {
+            opacity: element.style.opacity,
+            pointerEvents: element.style.pointerEvents,
+            disabled: element.disabled,
+            textContent: element.textContent
+        };
+
+        // Apply loading state
+        element.style.opacity = config.opacity;
+        element.style.pointerEvents = config.pointerEvents;
+
+        if (config.disable && element.disabled !== undefined) {
+            element.disabled = true;
+        }
+
+        if (config.text && element.textContent !== undefined) {
+            element.textContent = config.text;
+        }
+
+        element.classList.add('loading');
+
+        // Return cleanup function
+        return () => {
+            element.style.opacity = originalState.opacity;
+            element.style.pointerEvents = originalState.pointerEvents;
+            element.disabled = originalState.disabled;
+            element.textContent = originalState.textContent;
+            element.classList.remove('loading');
+        };
+    },
+
+    hide(element) {
+        if (typeof element === 'string') {
+            element = document.querySelector(element);
+        }
+
+        if (!element) return;
+
+        element.style.opacity = '';
+        element.style.pointerEvents = '';
+        element.disabled = false;
+        element.classList.remove('loading');
+    }
+};
+
+/**
+ * Enhanced navigation utility
+ */
+const navigation = {
+    init(navSelector = '.nav-item', options = {}) {
+        const defaultOptions = {
+            activeClass: 'active',
+            sectionAttribute: 'data-section',
+            contentPrefix: '',
+            contentSuffix: '-content',
+            onSectionChange: null
+        };
+
+        const config = { ...defaultOptions, ...options };
+        const navItems = document.querySelectorAll(navSelector);
+
+        navItems.forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.preventDefault();
+                const section = item.getAttribute(config.sectionAttribute);
+                if (section) {
+                    this.switchSection(section, config);
+                }
+            });
+        });
+    },
+
+    switchSection(sectionName, config = {}) {
+        const defaultConfig = {
+            activeClass: 'active',
+            contentPrefix: '',
+            contentSuffix: '-content',
+            onSectionChange: null
+        };
+
+        const options = { ...defaultConfig, ...config };
+
+        // Hide all sections
+        const sections = document.querySelectorAll('.section, .dashboard-section');
+        sections.forEach(section => {
+            section.classList.remove(options.activeClass);
+            section.classList.add('hidden');
+        });
+
+        // Show target section
+        const targetSection = document.getElementById(`${options.contentPrefix}${sectionName}${options.contentSuffix}`);
+        if (targetSection) {
+            targetSection.classList.remove('hidden');
+            targetSection.classList.add(options.activeClass);
+        }
+
+        // Update navigation active state
+        this.updateNavigation(sectionName, options);
+
+        // Call callback if provided
+        if (options.onSectionChange && typeof options.onSectionChange === 'function') {
+            options.onSectionChange(sectionName);
+        }
+    },
+
+    updateNavigation(activeSection, config = {}) {
+        const defaultConfig = {
+            activeClass: 'active',
+            sectionAttribute: 'data-section',
+            navSelector: '.nav-item, .vendor-nav-item'
+        };
+
+        const options = { ...defaultConfig, ...config };
+        const navItems = document.querySelectorAll(options.navSelector);
+
+        navItems.forEach(item => {
+            const section = item.getAttribute(options.sectionAttribute);
+
+            if (section === activeSection) {
+                item.classList.add(options.activeClass);
+            } else {
+                item.classList.remove(options.activeClass);
+            }
+        });
+    }
+};
+
+/**
+ * Show Confirm Modal (Promise-based replacement for window.confirm)
+ */
+function showConfirmModal({ title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', danger = false } = {}) {
+    return new Promise((resolve) => {
+        const existing = document.getElementById('confirm-modal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'confirm-modal';
+        modal.style.cssText = `
+            position: fixed; inset: 0; z-index: 9999;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+            padding: 1rem;
+            animation: confirmModalFadeIn 0.15s ease-out;
+        `;
+
+        const confirmColor = danger ? ['#ef4444', 'rgba(239,68,68,'] : ['#f59e0b', 'rgba(245,158,11,'];
+
+        modal.innerHTML = `
+            <div style="background:#151520; border:1px solid rgba(255,255,255,0.1); border-radius:0.75rem;
+                        box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); max-width:28rem; width:100%;
+                        overflow:hidden; animation:confirmModalSlideIn 0.2s ease-out;">
+                <div style="padding:1rem 1.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <h3 style="font-size:1.125rem; font-weight:700; color:#fff; margin:0;">${title}</h3>
+                </div>
+                <div style="padding:1.25rem 1.5rem;">
+                    <p style="font-size:0.875rem; color:#94a3b8; line-height:1.625; margin:0;">${message}</p>
+                </div>
+                <div style="padding:1rem 1.5rem; border-top:1px solid rgba(255,255,255,0.05);
+                            display:flex; align-items:center; justify-content:flex-end; gap:0.75rem;">
+                    <button id="confirm-modal-cancel" style="font-size:0.875rem; padding:0.5rem 1rem;
+                        border-radius:0.5rem; border:1px solid rgba(255,255,255,0.1); background:transparent;
+                        color:#94a3b8; cursor:pointer; transition:all 0.15s;"
+                        onmouseover="this.style.color='#fff';this.style.borderColor='rgba(255,255,255,0.2)'"
+                        onmouseout="this.style.color='#94a3b8';this.style.borderColor='rgba(255,255,255,0.1)'"
+                    >${cancelText}</button>
+                    <button id="confirm-modal-confirm" style="font-size:0.875rem; padding:0.5rem 1rem;
+                        border-radius:0.5rem; border:1px solid ${confirmColor[1]}0.3);
+                        background:${confirmColor[1]}0.2); color:${confirmColor[0]};
+                        cursor:pointer; font-weight:500; transition:all 0.15s;"
+                        onmouseover="this.style.background='${confirmColor[1]}0.3)'"
+                        onmouseout="this.style.background='${confirmColor[1]}0.2)'"
+                    >${confirmText}</button>
+                </div>
+            </div>
+        `;
+
+        if (!document.getElementById('confirm-modal-styles')) {
+            const style = document.createElement('style');
+            style.id = 'confirm-modal-styles';
+            style.textContent = `
+                @keyframes confirmModalFadeIn { from { opacity: 0; } to { opacity: 1; } }
+                @keyframes confirmModalSlideIn { from { opacity: 0; transform: scale(0.95) translateY(-10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+            `;
+            document.head.appendChild(style);
+        }
+
+        const cleanup = (result) => {
+            modal.remove();
+            document.removeEventListener('keydown', escHandler);
+            resolve(result);
+        };
+
+        const escHandler = (e) => {
+            if (e.key === 'Escape') cleanup(false);
+        };
+
+        document.body.appendChild(modal);
+        document.addEventListener('keydown', escHandler);
+        modal.addEventListener('click', (e) => { if (e.target === modal) cleanup(false); });
+        modal.querySelector('#confirm-modal-cancel').addEventListener('click', () => cleanup(false));
+        modal.querySelector('#confirm-modal-confirm').addEventListener('click', () => cleanup(true));
+
+        modal.querySelector('#confirm-modal-cancel').focus();
+    });
+}
+
+/**
+ * Show Notification
+ */
+function showNotification(message, type = 'info') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+
+    // Style the notification with vendor theme
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 16px 24px;
+        background: linear-gradient(135deg, var(--portal-surface), var(--portal-glass));
+        border: 1px solid rgba(0, 212, 255, 0.2);
+        border-radius: 12px;
+        color: var(--text-primary);
+        backdrop-filter: blur(20px);
+        box-shadow: var(--glow-primary);
+        z-index: 1000;
+        transform: translateX(100%);
+        transition: transform 0.3s ease;
+    `;
+
+    document.body.appendChild(notification);
+
+    // Animate in
+    setTimeout(() => {
+        notification.style.transform = 'translateX(0)';
+    }, 100);
+
+    // Remove after 3 seconds
+    setTimeout(() => {
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            if (notification.parentElement) {
+                document.body.removeChild(notification);
+            }
+        }, 300);
+    }, 3000);
+}
+
+
+// Export utilities to global scope
+window.ready = ready;
+window.debounce = debounce;
+window.throttle = throttle;
+window.formatCurrency = formatCurrency;
+window.formatNumber = formatNumber;
+window.formatDate = formatDate;
+window.formatRelativeTime = formatRelativeTime;
+window.isValidEmail = isValidEmail;
+window.validatePassword = validatePassword;
+window.validateTIN = validateTIN;
+window.validateBankAccount = validateBankAccount;
+window.validateRoutingNumber = validateRoutingNumber;
+window.formatTIN = formatTIN;
+window.formatRoutingNumber = formatRoutingNumber;
+window.generateId = generateId;
+window.copyToClipboard = copyToClipboard;
+window.scrollToElement = scrollToElement;
+window.isInViewport = isInViewport;
+window.storage = storage;
+window.url = url;
+window.device = device;
+window.validateForm = validateForm;
+window.showFieldError = showFieldError;
+window.clearFieldError = clearFieldError;
+window.clearAllFieldErrors = clearAllFieldErrors;
+window.showLoading = showLoading;
+window.showConfirmModal = showConfirmModal;
+window.showNotification = showNotification;
+window.animateCounter = animateCounter;
+window.sidebar = sidebar;
+window.loadingState = loadingState;
+window.navigation = navigation;

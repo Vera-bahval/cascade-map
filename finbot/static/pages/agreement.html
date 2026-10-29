@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OWASP FinBot CTF - Security Agreement</title>
+    <meta name="description" content="OWASP FinBot CTF participation agreement. Review the security policy before entering the platform.">
+
+    <link rel="icon" type="image/x-icon" href="/static/images/common/favicon.ico">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'bg-primary': '#07070d',
+                        'bg-secondary': '#0e0e1a',
+                        'cyan': '#00d4ff',
+                        'purple': '#7c3aed',
+                        'green': '#06ffa5',
+                        'amber': '#ffb800',
+                        'danger': '#ff3366',
+                        'text-1': '#f1f5f9',
+                        'text-2': '#94a3b8',
+                        'text-3': '#64748b',
+                        'border-dim': 'rgba(255,255,255,0.06)',
+                        'border-glow': 'rgba(0,212,255,0.25)',
+                    },
+                    fontFamily: {
+                        'sans': ['Inter', 'system-ui', 'sans-serif'],
+                        'mono': ['JetBrains Mono', 'monospace'],
+                    },
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { background: #07070d; }
+
+        .grid-bg {
+            position: fixed; inset: 0; z-index: 0; pointer-events: none;
+            background-image:
+                linear-gradient(rgba(0,212,255,0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,212,255,0.025) 1px, transparent 1px);
+            background-size: 60px 60px;
+        }
+
+        .glass {
+            background: linear-gradient(135deg, rgba(18,18,32,0.85), rgba(14,14,26,0.95));
+            border: 1px solid rgba(255,255,255,0.06);
+            backdrop-filter: blur(12px);
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 50%, #06ffa5 100%);
+            -webkit-background-clip: text; background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        @keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+        @keyframes pulse-glow { 0%,100% { box-shadow: 0 0 40px rgba(0,212,255,0.2); } 50% { box-shadow: 0 0 60px rgba(0,212,255,0.35); } }
+
+        .float { animation: float 6s ease-in-out infinite; }
+        .pulse-glow { animation: pulse-glow 4s ease-in-out infinite; }
+
+        @keyframes cta-pulse {
+            0%, 100% { border-color: rgba(0,212,255,0.3); }
+            50% { border-color: rgba(0,212,255,0.5); box-shadow: 0 0 24px rgba(0,212,255,0.1); }
+        }
+        #ctaBlock { animation: cta-pulse 3s ease-in-out infinite; }
+
+        .checkbox-box {
+            width: 24px; height: 24px;
+            border: 2px solid #00d4ff;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.3s;
+            flex-shrink: 0;
+        }
+        .checkbox-box.checked {
+            background: #00d4ff;
+            box-shadow: 0 0 16px rgba(0,212,255,0.4);
+        }
+        .checkbox-box.checked::after {
+            content: "✓"; color: #07070d; font-weight: bold; font-size: 14px;
+        }
+    </style>
+</head>
+
+<body class="text-text-2 font-sans antialiased overflow-x-hidden">
+    <div class="grid-bg"></div>
+
+    <main class="relative z-10 min-h-screen flex flex-col">
+        <!-- Header -->
+        <div class="pt-10 pb-6 text-center px-6">
+            <a href="https://genai.owasp.org/" target="_blank" rel="noopener" class="inline-flex items-center space-x-3 px-5 py-2.5 rounded-full glass border border-border-dim mb-8 hover:border-cyan/30 transition-all">
+                <img src="/static/images/common/GenAI_OWASP_Logo.png" alt="OWASP GenAI Security Project" class="h-7">
+                <span class="text-text-2 text-sm font-medium">OWASP GenAI Security Project</span>
+                <svg class="w-3.5 h-3.5 text-text-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+            </a>
+            <h1 class="text-4xl sm:text-5xl font-black text-text-1 tracking-tight mb-3">
+                OWASP <span class="gradient-text">FinBot</span> CTF
+            </h1>
+            <p class="text-lg text-text-2">Explore AI Security Vulnerabilities in a Safe Environment</p>
+        </div>
+
+        <!-- Content -->
+        <div class="flex-1 flex items-start justify-center px-6 pb-16">
+            <div class="max-w-5xl w-full grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+
+                <!-- Left: Meet FinBot -->
+                <div class="glass rounded-2xl p-8">
+                    <div class="text-center mb-6">
+                        <div class="float inline-block">
+                            <div class="w-24 h-24 rounded-2xl border border-border-glow pulse-glow flex items-center justify-center overflow-hidden p-1 mx-auto">
+                                <img src="/static/images/common/finbot.png" alt="OWASP FinBot" class="w-full h-full object-contain rounded-xl">
+                            </div>
+                        </div>
+                        <h2 class="text-2xl font-bold text-text-1 mt-4">Meet OWASP FinBot</h2>
+                    </div>
+
+                    <p class="text-text-2 leading-relaxed mb-5">
+                        This platform features <span class="text-cyan font-semibold">OWASP FinBot</span>, an AI-powered assistant designed for the
+                        <span class="text-cyan font-semibold">OWASP Agentic AI Capture-the-Flag (CTF)</span> experience.
+                        It explores real-world security risks, safe design practices, and behavior modeling in agentic systems.
+                    </p>
+
+                    <div class="bg-bg-primary/60 rounded-xl p-4 font-mono text-sm mb-6 border border-border-dim">
+                        <div><span class="text-green">$</span> <span class="text-text-1">whoami</span></div>
+                        <div class="text-text-3">&#x276F; Ethical Security Researcher</div>
+                        <div class="mt-2"><span class="text-green">$</span> <span class="text-text-1">mission</span></div>
+                        <div class="text-text-3">&#x276F; Learn AI vulnerabilities responsibly</div>
+                        <div class="mt-2"><span class="text-green">$</span> <span class="text-text-1">challenges</span></div>
+                        <div class="text-text-3">&#x276F; Read CTF walkthrough <a href="https://github.com/GenAI-Security-Project/finbot-ctf/blob/main/docs/FinBot-CTF-walkthrough.md" target="_blank" class="text-cyan hover:text-green underline">here</a></div>
+                    </div>
+
+                    <div class="flex flex-wrap gap-3 justify-center">
+                        <a href="https://genai.owasp.org/initiatives/#agenticinitiative" target="_blank" rel="noopener" class="text-sm text-text-3 hover:text-cyan transition px-3 py-1.5 rounded-lg bg-white/[0.03] border border-border-dim">
+                            OWASP ASI Initiative
+                        </a>
+                        <a href="https://github.com/GenAI-Security-Project/finbot-ctf" target="_blank" rel="noopener" class="text-sm text-text-3 hover:text-cyan transition px-3 py-1.5 rounded-lg bg-white/[0.03] border border-border-dim">
+                            GitHub Repository
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Right: Security Agreement -->
+                <div class="glass rounded-2xl p-8 border-amber/20">
+                    <div class="flex items-center gap-3 mb-6">
+                        <div class="w-10 h-10 rounded-xl bg-amber/15 flex items-center justify-center">
+                            <svg class="w-5 h-5 text-amber" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                        </div>
+                        <h2 class="text-2xl font-bold text-text-1">Security Agreement</h2>
+                    </div>
+
+                    <div class="bg-danger/10 border border-danger/30 rounded-xl p-4 mb-6">
+                        <p class="text-danger font-semibold text-sm mb-1">ETHICAL USE ONLY</p>
+                        <p class="text-text-3 text-sm">This is a controlled environment for educational purposes. All activities are monitored and logged.</p>
+                    </div>
+
+                    <div class="bg-bg-primary/60 border border-border-dim rounded-xl p-5 mb-6">
+                        <h3 class="text-cyan font-semibold mb-3">Participation Policy</h3>
+                        <ul class="space-y-2.5">
+                            <li class="flex items-start gap-2.5 text-sm text-text-2">
+                                <svg class="w-4 h-4 text-green flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Use the system responsibly and for learning/testing purposes only
+                            </li>
+                            <li class="flex items-start gap-2.5 text-sm text-text-2">
+                                <svg class="w-4 h-4 text-green flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Do not attempt to exploit, damage, or misuse the system beyond its intended CTF design
+                            </li>
+                            <li class="flex items-start gap-2.5 text-sm text-text-2">
+                                <svg class="w-4 h-4 text-green flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Treat the system, data, and other users with respect
+                            </li>
+                            <li class="flex items-start gap-2.5 text-sm text-text-2">
+                                <svg class="w-4 h-4 text-green flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Understand that interactions may be logged for educational and monitoring purposes
+                            </li>
+                            <li class="flex items-start gap-2.5 text-sm text-text-2">
+                                <svg class="w-4 h-4 text-green flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                                Violations may result in access restrictions
+                            </li>
+                        </ul>
+                    </div>
+
+                    <div class="bg-gradient-to-b from-cyan/[0.06] to-purple/[0.04] border-2 border-cyan/30 rounded-xl p-6 text-center relative overflow-hidden" id="ctaBlock">
+                        <p class="text-text-1 font-semibold mb-4">To continue, accept the participation policy</p>
+                        <div class="flex items-center justify-center gap-3 mb-5 cursor-pointer" id="agreementRow">
+                            <div class="checkbox-box" id="agreementCheckbox"></div>
+                            <label class="text-text-2 text-sm cursor-pointer select-none">
+                                I agree to the site policy and rules
+                            </label>
+                        </div>
+
+                        <button class="w-full bg-gradient-to-r from-cyan to-purple text-bg-primary font-bold px-8 py-4 rounded-xl text-base transition-all hover:shadow-[0_0_32px_rgba(0,212,255,0.3)] hover:scale-[1.02] disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:shadow-none disabled:hover:scale-100" id="enterButton" disabled>
+                            Enter Platform
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="py-6 text-center px-6">
+            <p class="text-text-3 text-sm">Part of the <a href="https://genai.owasp.org/" target="_blank" rel="noopener" class="text-cyan hover:text-green transition">OWASP GenAI Security Project</a></p>
+        </div>
+    </main>
+
+    <script>
+        const checkbox = document.getElementById('agreementCheckbox');
+        const enterButton = document.getElementById('enterButton');
+        const agreementRow = document.getElementById('agreementRow');
+
+        function toggleCheckbox() {
+            checkbox.classList.toggle('checked');
+            const isChecked = checkbox.classList.contains('checked');
+            enterButton.disabled = !isChecked;
+
+            if (isChecked) {
+                localStorage.setItem('agreedToRules', 'yes');
+                document.cookie = 'agreedToRules=yes; Path=/; SameSite=Lax';
+            } else {
+                localStorage.removeItem('agreedToRules');
+                document.cookie = 'agreedToRules=; Path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+            }
+        }
+
+        agreementRow.addEventListener('click', toggleCheckbox);
+
+        function getRedirectTarget() {
+            const params = new URLSearchParams(window.location.search);
+            const next = params.get('next');
+            if (next) {
+                try {
+                    const url = new URL(next, window.location.origin);
+                    if (url.origin === window.location.origin) return url.pathname + url.search + url.hash;
+                } catch { /* invalid URL, fall through */ }
+            }
+            return '/';
+        }
+
+        enterButton.addEventListener('click', async function() {
+            if (!enterButton.disabled) {
+                await logAgreement();
+                window.location.href = getRedirectTarget();
+            }
+        });
+
+        async function logAgreement() {
+            try {
+                await fetch('/api/log-agreement', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        agreed: true,
+                        timestamp: new Date().toISOString(),
+                        userAgent: navigator.userAgent,
+                        referrer: document.referrer || 'direct'
+                    })
+                });
+            } catch (error) {
+                console.warn('Agreement logging failed:', error);
+            }
+        }
+
+        if (localStorage.getItem('agreedToRules') === 'yes') {
+            checkbox.classList.add('checked');
+            enterButton.disabled = false;
+        }
+    </script>
+</body>
+</html>
