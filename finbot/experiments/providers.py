@@ -22,7 +22,7 @@ class ProviderError(ValueError):
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 
 
-def validate_base_url(url):
+def validate_base_url(url, *, allow_private_network=False):
     try:
         parts = urlsplit(url)
         host = parts.hostname
@@ -40,12 +40,15 @@ def validate_base_url(url):
         raise ProviderError("Use an http(s) base URL without credentials, query or fragment")
     if host.lower().rstrip(".") in {"metadata.google.internal", "metadata", "instance-data"}:
         raise ProviderError("Cloud metadata endpoints are not allowed")
-    local = host.lower().rstrip(".") in LOCAL_HOSTS
+    local = host.lower().rstrip(".") in LOCAL_HOSTS or allow_private_network
     if parts.scheme == "http" and not local:
         raise ProviderError(
-            "Remote endpoints require HTTPS; HTTP is allowed for explicit local servers"
+            "Для HTTP-подключения к рабочей сети включите «Внутренний сервер». "
+            "Для внешнего API нужен HTTPS."
         )
     _check_address(host, allow_private=local)
+    if local:
+        _check_internal_address(host)
     return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
 
@@ -54,7 +57,10 @@ def validate_connection(connection):
     if result.get("kind") not in {"chat_completions", "responses", "ollama", "mock"}:
         raise ProviderError("Unsupported provider protocol")
     if result["kind"] != "mock":
-        result["base_url"] = validate_base_url(result.get("base_url", ""))
+        result["base_url"] = validate_base_url(
+            result.get("base_url", ""),
+            allow_private_network=result.get("allow_private_network", False),
+        )
     return result
 
 
@@ -69,16 +75,26 @@ def _check_address(host, allow_private=False):
         address.is_link_local
         or address.is_unspecified
         or address.is_multicast
-        or str(address) in {"100.100.100.200", "192.0.0.192"}
+        or str(address) in {"100.100.100.200", "192.0.0.192", "fd00:ec2::254"}
     ):
         raise ProviderError("Metadata, link-local and unspecified endpoints are not allowed")
     if not allow_private and not address.is_global:
+        raise ProviderError("Для адреса в рабочей сети включите «Внутренний сервер».")
+
+
+def _check_internal_address(host):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if not address.is_private:
         raise ProviderError(
-            "Private remote endpoints are not allowed; use an explicit local server"
+            "Адрес внутреннего сервера должен вести в локальную или рабочую сеть. "
+            "Для публичного адреса отключите «Внутренний сервер» и используйте HTTPS."
         )
 
 
-async def _check_dns(base_url):
+async def _check_dns(base_url, *, allow_private_network=False):
     parts = urlsplit(base_url)
     try:
         addresses = await asyncio.wait_for(
@@ -90,27 +106,35 @@ async def _check_dns(base_url):
             timeout=15,
         )
     except (OSError, TimeoutError):
-        raise ProviderError("Could not resolve endpoint hostname") from None
+        raise ProviderError(
+            "Не удалось определить адрес сервера. Проверьте имя и доступность DNS "
+            "на машине или в контейнере, где запущен FinBot."
+        ) from None
     if not addresses:
         raise ProviderError("Endpoint hostname has no addresses")
-    local = parts.hostname.lower().rstrip(".") in LOCAL_HOSTS
+    local = parts.hostname.lower().rstrip(".") in LOCAL_HOSTS or allow_private_network
     for entry in addresses:
         _check_address(entry[4][0], allow_private=local)
-        if local and not ipaddress.ip_address(entry[4][0]).is_private:
-            raise ProviderError("Local hostname resolved outside the local network")
+        if local:
+            _check_internal_address(entry[4][0])
     return addresses[0][4][0]
 
 
 async def _target(url, connection):
     # Pin the validated DNS address so DNS rebinding cannot redirect credentials.
-    address = await _check_dns(url)
+    address = await _check_dns(
+        url, allow_private_network=connection.get("allow_private_network", False)
+    )
     original = httpx.URL(url)
     headers = {**_headers(connection), "Host": original.netloc.decode("ascii")}
     return original.copy_with(host=address), headers, {"sni_hostname": original.host}
 
 
 def _endpoint(connection, suffix):
-    base = validate_base_url(connection.get("base_url", ""))
+    base = validate_base_url(
+        connection.get("base_url", ""),
+        allow_private_network=connection.get("allow_private_network", False),
+    )
     if connection.get("kind") == "ollama":
         parts = urlsplit(base)
         path = parts.path.rstrip("/")
@@ -276,8 +300,6 @@ class ExperimentLLMClient:
         self.kind = connection["kind"]
         if self.kind not in {"chat_completions", "responses", "ollama", "mock"}:
             raise ProviderError("Unsupported provider protocol")
-        if self.kind != "mock":
-            validate_base_url(connection.get("base_url", ""))
         self.http = httpx.AsyncClient(
             timeout=config.get("timeout_seconds", 60), follow_redirects=False, trust_env=False
         )

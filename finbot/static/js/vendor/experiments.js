@@ -16,15 +16,31 @@
   const requestKey = () => typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), n=>n.toString(16).padStart(2,'0')).join('');
   const seconds = value => value === null || value === undefined ? '—' : `${number(value)} с`;
   const date = value => {if(!value)return '—'; const d=new Date(value);return Number.isNaN(d.valueOf())?String(value):d.toLocaleString('ru-RU',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});};
-  const errorText = value => typeof value === 'string' ? value : JSON.stringify(value);
+  function errorText(value) {
+    if(typeof value==='string')return value;
+    if(Array.isArray(value))return value.map(errorText).join('\n');
+    if(value && typeof value==='object'){
+      const field=value.field || (Array.isArray(value.loc)?value.loc.filter(part=>part!=='body').join('.'):null);
+      const message=value.message || value.msg;
+      if(message)return `${field?field+': ':''}${message}${value.details?'\n'+errorText(value.details):''}`;
+      if(value.detail)return errorText(value.detail);
+    }
+    return JSON.stringify(value);
+  }
   function message(text, error=false) { const box=$('exp-message');box.textContent=text;box.className=`exp-message${error?' error':''}`;box.hidden=false; }
   async function api(path, data, method) {
     const headers={Accept:'application/json'};
     const options={method:method || (data===undefined?'GET':'POST'),credentials:'same-origin',headers};
     if(data!==undefined){headers['Content-Type']='application/json';headers['X-CSRF-Token']=document.querySelector('meta[name="csrf-token"]')?.content || '';options.body=JSON.stringify(data);}
     const response=await fetch(API+path, options);
-    if(response.redirected || !response.headers.get('content-type')?.includes('application/json')) throw new Error('Сессия недоступна или сервер вернул страницу вместо JSON. Обновите страницу и проверьте вход.');
-    const payload=await response.json();
+    if(response.redirected){
+      const destination=new URL(response.url,window.location.href).pathname;
+      if(/\/(?:login|signin|sign-in|auth)(?:\/|$)/i.test(destination))throw new Error('Запрос перенаправлен на страницу входа. Обновите страницу и проверьте вход.');
+      throw new Error(`API перенаправил запрос на другой адрес (HTTP ${response.status}). Проверьте адрес FinBot и настройки прокси.`);
+    }
+    if(!response.headers.get('content-type')?.includes('application/json'))throw new Error(`FinBot вернул страницу вместо JSON (HTTP ${response.status}). Причина может быть в ошибке сервера или настройках прокси.`);
+    let payload;
+    try {payload=await response.json();}catch {throw new Error(`Сервер вернул некорректный JSON (HTTP ${response.status}).`);}
     if(!response.ok)throw new Error(errorText(payload.detail || payload.error || `HTTP ${response.status}`));
     return payload;
   }
@@ -62,7 +78,7 @@
     if(!old && state.connections.length===1)form.elements.connection_id.value=state.connections[0].id;
     options($('exp-saved'),state.configs,'Новая конфигурация',$('exp-saved').value);
     $('exp-connections').replaceChildren();
-    for(const c of state.connections){const item=el('div','exp-connection');item.append(el('strong','',c.name),el('small','',`${c.kind} · ${c.base_url || 'без внешнего API'}`));if(c.has_api_key)item.append(el('div','exp-tag','Ключ сохранён'));$('exp-connections').append(item);}
+    for(const c of state.connections){const item=el('div','exp-connection');item.append(el('strong','',c.name),el('small','',`${c.kind} · ${c.base_url || 'без внешнего API'}`));if(c.allow_private_network)item.append(el('div','exp-tag','Внутренний сервер'));if(c.has_api_key)item.append(el('div','exp-tag','Ключ сохранён'));$('exp-connections').append(item);}
     $('exp-connection-details').open=!state.connections.length;
     if(!$('exp-scenarios').childElementCount){for(const s of state.scenarios){const label=el('label','exp-scenario');const box=el('input');box.type='checkbox';box.name='scenario';box.value=s.id;box.checked=true;label.append(box,el('span','',scenarioNames[s.id] || s.title || s.id));label.title=s.expected || s.description || '';$('exp-scenarios').append(label);}}
     updateScenarioCount();updateCapabilities();
@@ -203,8 +219,9 @@
     for(const key of keys){const [scenario,repeat]=key.split('|');const row=el('tr');row.append(el('td','',`${scenarioNames[scenario] || scenario} · ${repeat}`));for(const run of runs){const c=run.cases?.find(c=>`${c.scenario_id}|${c.repeat}`===key),td=el('td');if(!c)td.textContent='Нет запуска';else if(c.status!=='completed')td.append(badge(c.status));else{const report=reportOf(c);td.append(reportPill(report),el('small','',report.outcome?.summary || 'Нет данных об исходе'),bindButton('Разобрать',()=>openDetail(run.id,c.id)));}row.append(td);}body.append(row);}outcomes.append(body);outcomeWrap.append(outcomes);host.append(outcomeWrap);
   }
   document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
-  $('exp-kind').addEventListener('change',()=>{const kind=$('exp-kind').value;$('exp-url').required=kind!=='mock';if(kind==='ollama')$('exp-url').value='http://host.docker.internal:11434';else if(kind==='mock')$('exp-url').value='http://mock.invalid';else if($('exp-url').value.includes('host.docker.internal') || $('exp-url').value.includes('mock.invalid'))$('exp-url').value='';});
-  $('exp-connection-form').addEventListener('submit',event=>{event.preventDefault();const button=event.submitter;action(button,async()=>{const data=Object.fromEntries(new FormData(event.target));if(!data.api_key)delete data.api_key;const saved=await api('/connections',data);event.target.reset();await bootstrap();form.elements.connection_id.value=saved.id || saved.connection?.id;updateCapabilities();message('Подключение сохранено. Теперь получите список моделей или введите ID вручную.');});});
+  function updateConnectionForm(){const mock=$('exp-kind').value==='mock';$('exp-url').required=!mock;$('exp-private-network-option').hidden=mock;$('exp-private-network').disabled=mock;if(mock)$('exp-private-network').checked=false;}
+  $('exp-kind').addEventListener('change',()=>{const kind=$('exp-kind').value;updateConnectionForm();if(kind==='ollama')$('exp-url').value='http://host.docker.internal:11434';else if(kind==='mock')$('exp-url').value='http://mock.invalid';else if($('exp-url').value.includes('host.docker.internal') || $('exp-url').value.includes('mock.invalid'))$('exp-url').value='';});
+  $('exp-connection-form').addEventListener('submit',event=>{event.preventDefault();const button=event.submitter;action(button,async()=>{const data=Object.fromEntries(new FormData(event.target));data.allow_private_network=!$('exp-private-network').disabled && $('exp-private-network').checked;if(!data.api_key)delete data.api_key;const saved=await api('/connections',data);event.target.reset();updateConnectionForm();await bootstrap();form.elements.connection_id.value=saved.id || saved.connection?.id;updateCapabilities();message('Подключение сохранено. Теперь получите список моделей или введите ID вручную.');});});
   form.elements.connection_id.addEventListener('change',updateCapabilities);
   $('exp-scenarios').addEventListener('change',updateScenarioCount);
   $('exp-saved').addEventListener('change',()=>{const saved=state.configs.find(c=>c.id===$('exp-saved').value);if(!saved){form.reset();updateCapabilities();return;}form.reset();for(const [key,value]of Object.entries(saved)){const input=form.elements[key];if(input && key!=='scenario_ids')input.value=value===null?'':String(value);}updateCapabilities();for(const c of $('exp-scenarios').querySelectorAll('input'))c.checked=saved.scenario_ids?.includes(c.value) ?? true;updateScenarioCount();message('Конфигурация загружена. При сохранении создаётся отдельная версия.');});
@@ -218,5 +235,6 @@
   $('exp-close-detail').addEventListener('click',()=>{$('exp-detail').close();state.detail=null;});$('exp-detail').addEventListener('close',()=>{state.detail=null;});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshRuns().catch(e=>message(e.message,true));});
   window.addEventListener('pagehide',()=>clearTimeout(state.poll));
+  updateConnectionForm();
   (async()=>{try{await bootstrap();await refreshRuns();}catch(e){message(`Не удалось загрузить эксперименты: ${e.message}`,true);}finally{schedulePoll();}})();
 })();

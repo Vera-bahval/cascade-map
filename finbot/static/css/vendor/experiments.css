@@ -3,3 +3,5 @@
 @media(max-width:650px){.exp-outcome{grid-template-columns:1fr;gap:16px}.exp-verdict{padding:16px}.exp-verdict h4{font-size:18px}.exp-agent-heading{flex-wrap:wrap}.exp-agent-status{margin-left:37px;width:100%;text-align:left}.exp-agent-step{padding:14px}.exp-detail-case{padding:12px!important}.exp-detail-case>summary{flex-wrap:wrap;gap:8px}.exp-case-heading{width:100%}.exp-detail-case>summary>.exp-pill{margin-left:0}.exp-detail-case>summary:after{margin-left:auto}.exp-detail-stats{gap:8px}.exp-stat{padding:10px}.exp-stat strong{font-size:17px;overflow-wrap:anywhere}.exp-observation{padding:12px}.exp-case-metrics{flex-direction:column}}
 
 #exp-close-detail{white-space:nowrap;flex-shrink:0}
+.experiments .exp-checkbox{flex-direction:row;align-items:center;gap:9px;cursor:pointer}
+#exp-private-network-option .exp-help{margin:8px 0 0;overflow-wrap:anywhere}

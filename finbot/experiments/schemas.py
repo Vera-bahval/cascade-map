@@ -13,6 +13,7 @@ class ConnectionInput(InputModel):
     kind: Literal["chat_completions", "responses", "ollama", "mock"]
     base_url: str = Field(default="", max_length=2048)
     api_key: str = Field(default="", max_length=4096)
+    allow_private_network: bool = False
 
 
 class ExperimentConfig(InputModel):

@@ -41,7 +41,7 @@ TOOL = {"type": "function", "name": "lookup", "parameters": {"type": "object", "
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    async def resolve(_):
+    async def resolve(_, **kwargs):
         return "8.8.8.8"
 
     monkeypatch.setattr(p, "_check_dns", resolve)

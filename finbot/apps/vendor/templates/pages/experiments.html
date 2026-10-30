@@ -18,6 +18,7 @@
             <label>Название<input name="name" required maxlength="100" placeholder="Например, лабораторный API"></label>
             <label>Протокол<select name="kind" id="exp-kind"><option value="chat_completions">API · Chat Completions</option><option value="responses">API · Responses</option><option value="ollama">Локально · Ollama</option><option value="mock">Тест интерфейса · без LLM</option></select></label>
             <label>Базовый URL<input name="base_url" id="exp-url" type="url" required placeholder="https://provider.example/v1" autocomplete="off"></label>
+            <div id="exp-private-network-option"><label class="exp-checkbox"><input type="checkbox" name="allow_private_network" id="exp-private-network" aria-describedby="exp-private-network-hint">Внутренний сервер</label><p class="exp-help" id="exp-private-network-hint">Для vLLM в рабочей сети: <code>http://server:8100/v1</code>. Адрес должен быть доступен серверу FinBot.</p></div>
             <label>API-ключ<input name="api_key" type="password" autocomplete="new-password" placeholder="Не нужен для локального сервера"></label>
             <p class="exp-help" id="exp-connection-hint">URL задаётся со стороны сервера FinBot. Проверка каталога не запускает эксперимент.</p>
             <button class="exp-button" type="submit">Сохранить подключение</button>
