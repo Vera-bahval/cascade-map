@@ -17,6 +17,7 @@ venv
 
 # Databases
 *.db
+data/experiments.db*
 
 # IDE
 .cursor

@@ -22,7 +22,12 @@ DEFAULT_BACK = ("/", "Back to Home")
 
 def is_api_request(request: Request) -> bool:
     """Determine if the request is for an API endpoint."""
-    return request.url.path.startswith("/api/")
+    path = request.scope["path"]
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and (path == root_path or path.startswith(root_path + "/")):
+        path = path[len(root_path) :] or "/"
+    prefixes = ("/api", *(portal + "/api" for portal in PORTAL_ROUTES))
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes)
 
 
 def get_portal_context(request: Request) -> dict:
@@ -152,10 +157,7 @@ async def not_found_handler(request: Request, exc: HTTPException):
 async def internal_server_error_handler(request: Request, exc: Exception):
     """Handle 500 errors with custom error page or JSON response."""
     if is_api_request(request):
-        # exc may be any exception type (not just HTTPException), so use
-        # getattr to safely retrieve .detail; fall back to str(exc) otherwise.
-        detail = getattr(exc, "detail", None) or str(exc) or "Internal Server Error"
-        error_data = get_json_error_response(500, detail)
+        error_data = get_json_error_response(500)
         return JSONResponse(content=error_data, status_code=500)
 
     return render_error_page(request, 500)

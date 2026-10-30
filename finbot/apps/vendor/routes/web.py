@@ -225,3 +225,19 @@ async def vendor_assistant(
             "is_multi_vendor": session_context.is_multi_vendor_user(),
         },
     )
+
+
+@router.get("/experiments", response_class=HTMLResponse, name="vendor_experiments")
+async def vendor_experiments(
+    request: Request, session_context: SessionContext = Depends(get_session_context)
+):
+    """Experiment workbench is session-scoped and needs no selected vendor."""
+    return template_response(
+        request,
+        "pages/experiments.html",
+        {
+            "request": request,
+            "vendor_context": session_context.current_vendor,
+            "is_multi_vendor": session_context.is_multi_vendor_user(),
+        },
+    )

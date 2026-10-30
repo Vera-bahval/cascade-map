@@ -4,6 +4,8 @@ services:
       context: .
       target: ${DOCKER_TARGET:-app}
     container_name: finbot-app
+    init: true
+    stop_grace_period: 75s
     ports:
       - "${PORT:-8000}:8000"
     env_file: .env
@@ -11,6 +13,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=${DATABASE_URL:-sqlite://data/finbot.db}
       - POSTGRES_HOST=postgres
+      - FINBOT_EXPERIMENTS_DB=${FINBOT_EXPERIMENTS_DB:-/app/data/experiments.db}
     depends_on:
       redis:
         condition: service_healthy

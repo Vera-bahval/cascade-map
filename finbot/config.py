@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Database Config
     DATABASE_URL: str = "sqlite://finbot.db"
     DATABASE_TYPE: DatabaseType = "sqlite"
+    FINBOT_EXPERIMENTS_DB: str = "data/experiments.db"
 
     # Postgres Config
     POSTGRES_HOST: str = "localhost"
