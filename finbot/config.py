@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings
 
 DatabaseType = Literal["sqlite", "postgresql"]
@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     # Database Config
     DATABASE_URL: str = "sqlite://finbot.db"
     DATABASE_TYPE: DatabaseType = "sqlite"
+    FINBOT_EXPERIMENTS_DB: str = "data/experiments.db"
+    FINBOT_EXPERIMENTS_MAX_PARALLEL_JOBS: int = Field(default=2, ge=1, le=8)
+    FINBOT_EXPERIMENTS_MAX_PARALLEL_CASES: int = Field(default=4, ge=1, le=16)
+    FINBOT_RESULTS_PG_HOST: str = ""
+    FINBOT_RESULTS_PG_PORT: int = 5432
+    FINBOT_RESULTS_PG_DATABASE: str = "experiments"
+    FINBOT_RESULTS_PG_USER: str = ""
+    FINBOT_RESULTS_PG_PASSWORD: str = ""
+    FINBOT_RESULTS_PG_SSLROOTCERT: str = ""
 
     # Postgres Config
     POSTGRES_HOST: str = "localhost"
@@ -144,7 +153,11 @@ class Settings(BaseSettings):
     EMAIL_FROM_NAME: str = "OWASP FinBot CTF"
 
     model_config = ConfigDict(
-        env_file=".env", env_file_encoding="utf-8", case_sensitive=False
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        hide_input_in_errors=True,
     )
 
     @model_validator(mode="after")

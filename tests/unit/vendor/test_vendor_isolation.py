@@ -9,6 +9,8 @@ from finbot.core.data.models import UserSession
 
 VENDOR_API_PREFIX = "/vendor/api/v1"
 
+# Explicit Cookie headers keep simulated users separate from the client cookie jar.
+
 
 # ============================================================================
 # ISO-DAT-001: Basic Data Read/Write Isolation
@@ -56,12 +58,12 @@ def test_basic_data_read_write_isolation(fast_client: TestClient, vendor_pair_se
     )
 
     # Vendor1 should see the invoice
-    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r1.status_code == 200
     assert r1.json()["total_count"] == 1
 
     # Vendor2 should NOT see vendor1's invoice
-    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s2.session_id})
+    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s2.session_id}"})
     assert r2.status_code == 200
     assert r2.json()["total_count"] == 0
 
@@ -113,7 +115,7 @@ def test_data_manipulation_isolation(fast_client: TestClient, vendor_pair_setup)
     # Vendor2 attempts to access vendor1's invoice -> should be 403
     r = fast_client.get(
         f"{VENDOR_API_PREFIX}/invoices/{invoice_id}",
-        cookies={"finbot_session": s2.session_id}
+        headers={"Cookie": f"finbot_session={s2.session_id}"}
     )
     assert r.status_code == 403
 
@@ -184,12 +186,12 @@ def test_list_aggregate_data_integrity(fast_client: TestClient, vendor_pair_setu
     )
 
     # Vendor1 should see exactly 2 invoices
-    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r1.status_code == 200
     assert r1.json()["total_count"] == 2
 
     # Vendor2 should see exactly 1 invoice
-    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s2.session_id})
+    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s2.session_id}"})
     assert r2.status_code == 200
     assert r2.json()["total_count"] == 1
 
@@ -250,21 +252,21 @@ def test_cross_vendor_update_delete_attack(fast_client: TestClient, vendor_pair_
     r_update = fast_client.patch(
         f"{VENDOR_API_PREFIX}/invoices/{invoice_id}",
         json={"amount": 999999.99, "description": "HACKED"},
-        cookies={"finbot_session": s2.session_id}
+        headers={"Cookie": f"finbot_session={s2.session_id}"}
     )
     assert r_update.status_code in [403, 404]
 
     # Vendor2 attempts to DELETE vendor1's invoice
     r_delete = fast_client.delete(
         f"{VENDOR_API_PREFIX}/invoices/{invoice_id}",
-        cookies={"finbot_session": s2.session_id}
+        headers={"Cookie": f"finbot_session={s2.session_id}"}
     )
     assert r_delete.status_code in [403, 404]
 
     # Verify invoice still exists and unchanged
     r_verify = fast_client.get(
         f"{VENDOR_API_PREFIX}/invoices",
-        cookies={"finbot_session": s1.session_id}
+        headers={"Cookie": f"finbot_session={s1.session_id}"}
     )
     assert r_verify.status_code == 200
     invoices = r_verify.json().get("invoices", [])
@@ -338,7 +340,7 @@ def test_sql_injection_invoice_fields(fast_client: TestClient, vendor_pair_setup
         r = fast_client.get(
             f"{VENDOR_API_PREFIX}/invoices",
             params={"search": payload},
-            cookies={"finbot_session": s1.session_id}
+            headers={"Cookie": f"finbot_session={s1.session_id}"}
         )
         
         assert r.status_code in [200, 400]
@@ -410,7 +412,7 @@ def test_unauthorized_field_modification(fast_client: TestClient, vendor_pair_se
     r = fast_client.put(
         f"{VENDOR_API_PREFIX}/invoices/{invoice_id}",
         json=modify_payload,
-        cookies={"finbot_session": s1.session_id}
+        headers={"Cookie": f"finbot_session={s1.session_id}"}
     )
 
     # Should get 403 Forbidden or 404 Not Found
@@ -481,7 +483,7 @@ def test_id_enumeration_attack(fast_client: TestClient, vendor_pair_setup):
     for test_id in test_ids:
         r = fast_client.get(
             f"{VENDOR_API_PREFIX}/invoices/{test_id}",
-            cookies={"finbot_session": s2.session_id}
+            headers={"Cookie": f"finbot_session={s2.session_id}"}
         )
         assert r.status_code in [403, 404], \
             f"ID {test_id} returned {r.status_code} instead of 403/404"
@@ -528,7 +530,7 @@ def test_forced_logout_session_invalidation(fast_client: TestClient, vendor_pair
     db = vendor_pair_setup['db']
 
     # Verify s1 has access to vendor1's resources
-    r = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r.status_code == 200
 
     # Create invoice for v1
@@ -548,7 +550,7 @@ def test_forced_logout_session_invalidation(fast_client: TestClient, vendor_pair
     db.commit()
 
     # Now s1 should no longer see v1's invoice
-    r = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r.status_code == 200
     assert r.json()["total_count"] == 0  # Should not see v1's invoice anymore
 
@@ -618,13 +620,23 @@ def test_concurrent_session_overlap(fast_client: TestClient, vendor_pair_setup):
     )
 
     # Both sessions should still work independently
-    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r1.status_code == 200
     assert r1.json()["total_count"] == 1
+    assert r1.json()["invoices"][0]["invoice_number"] == "OVERLAP-V1"
 
-    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s2.session_id})
+    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s2.session_id}"})
     assert r2.status_code == 200
     assert r2.json()["total_count"] == 1
+    assert r2.json()["invoices"][0]["invoice_number"] == "OVERLAP-V2"
+
+    r1_again = fast_client.get(
+        f"{VENDOR_API_PREFIX}/invoices",
+        headers={"Cookie": f"finbot_session={s1.session_id}"},
+    )
+    assert r1_again.status_code == 200
+    assert r1_again.json()["total_count"] == 1
+    assert r1_again.json()["invoices"][0]["invoice_number"] == "OVERLAP-V1"
 
     db.close()
 
@@ -690,10 +702,10 @@ def test_namespace_integrity_checks(fast_client: TestClient, vendor_pair_setup):
         due_date=datetime.now(timezone.utc) + timedelta(days=30),
     )
 
-    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s1.session_id})
+    r1 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s1.session_id}"})
     assert r1.json()["total_count"] == 1
 
-    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", cookies={"finbot_session": s2.session_id})
+    r2 = fast_client.get(f"{VENDOR_API_PREFIX}/invoices", headers={"Cookie": f"finbot_session={s2.session_id}"})
     assert r2.json()["total_count"] == 0
 
     db.close()
@@ -753,7 +765,7 @@ def test_peak_load_concurrent_interaction(fast_client: TestClient, multi_vendor_
     for vendor_data in vendors:
         r = fast_client.get(
             f"{VENDOR_API_PREFIX}/invoices",
-            cookies={"finbot_session": vendor_data['session_id']}
+            headers={"Cookie": f"finbot_session={vendor_data['session_id']}"}
         )
         assert r.status_code == 200
         invoices = r.json()['invoices']
@@ -829,7 +841,7 @@ def test_expired_session_rejection(fast_client: TestClient, db):
     # Verify session works
     r = fast_client.get(
         f"{VENDOR_API_PREFIX}/invoices",
-        cookies={"finbot_session": session.session_id}
+        headers={"Cookie": f"finbot_session={session.session_id}"}
     )
     assert r.status_code == 200
     
@@ -843,7 +855,7 @@ def test_expired_session_rejection(fast_client: TestClient, db):
     try:
         r_expired = fast_client.get(
             f"{VENDOR_API_PREFIX}/invoices",
-            cookies={"finbot_session": session.session_id}
+            headers={"Cookie": f"finbot_session={session.session_id}"}
         )
         # If we get here, check for non-200 status (401, 403, 500, etc)
         assert r_expired.status_code != 200, \

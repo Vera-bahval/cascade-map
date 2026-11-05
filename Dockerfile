@@ -32,7 +32,7 @@ USER finbot
 
 EXPOSE 8000
 ENTRYPOINT ["sh", "docker/entrypoint.sh"]
-CMD ["sh", "-c", "gunicorn finbot.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --workers ${WEB_CONCURRENCY:-3} --timeout 300 --graceful-timeout 60"]
+CMD ["python", "scripts/start_local.py", "--container"]
 
 # ── Full target: includes Playwright + Chromium for OG image rendering
 FROM base AS app-full
@@ -46,4 +46,4 @@ USER finbot
 
 EXPOSE 8000
 ENTRYPOINT ["sh", "docker/entrypoint.sh"]
-CMD ["sh", "-c", "gunicorn finbot.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --workers ${WEB_CONCURRENCY:-3} --timeout 300 --graceful-timeout 60"]
+CMD ["python", "scripts/start_local.py", "--container"]

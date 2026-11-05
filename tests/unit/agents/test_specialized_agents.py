@@ -639,7 +639,7 @@ class TestSpecializedAgents:
     # =========================================================================
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_sai_von_005_onboarding_tracking(self):
+    async def test_sai_von_005_onboarding_tracking(self, vendor_pair_setup):
         """
         SAI-VON-005: Onboarding progress tracking and reporting
         Title: Agent tracks and reports vendor onboarding progress
@@ -669,17 +669,19 @@ class TestSpecializedAgents:
         9. History available for review
         10. Progress tracking verified
         """
-        session_context = self._create_session_context("vendor_tracking@example.com")
+        session_context = vendor_pair_setup["s1"]
+        vendor = vendor_pair_setup["v1"]
         agent = VendorOnboardingAgent(session_context=session_context)
 
         task_data = {
             "action": "get_progress",
-            "vendor_id": "VEND-001",
+            "vendor_id": vendor.id,
         }
 
         result = await agent.process(task_data)
         assert result is not None
         assert isinstance(result, dict)
+        assert result["task_status"] == "success"
 
         print(f"✓ SAI-VON-005: Progress query processed, result keys: {list(result.keys())}")
         print(f"✓ SAI-VON-005: Agent returned {len(result)} fields")
@@ -1195,7 +1197,8 @@ class TestSpecializedAgents:
     # SAI-EDGE: Edge Case Tests for Specialized Agents
     # =========================================================================
     @pytest.mark.unit
-    def test_sai_edge_001_invoice_agent_empty_task_data_prompt(self):
+    @pytest.mark.asyncio
+    async def test_sai_edge_001_invoice_agent_empty_task_data_prompt(self):
         """
         SAI-EDGE-001: Invoice agent handles None task_data gracefully
         Title: Invoice agent returns safe default prompt when no task_data
@@ -1230,12 +1233,12 @@ class TestSpecializedAgents:
         session_context = self._create_session_context("edge_empty@example.com")
         agent = InvoiceAgent(session_context=session_context)
 
-        prompt = agent._get_user_prompt(task_data=None)
+        prompt = await agent._get_user_prompt(task_data=None)
         assert isinstance(prompt, str)
         assert len(prompt) > 0
         assert "invoice" in prompt.lower()
 
-        prompt_empty = agent._get_user_prompt(task_data={})
+        prompt_empty = await agent._get_user_prompt(task_data={})
         assert isinstance(prompt_empty, str)
         assert len(prompt_empty) > 0
 
@@ -1243,7 +1246,8 @@ class TestSpecializedAgents:
         print(f"✓ SAI-EDGE-001: Empty dict → '{prompt_empty.strip()[:60]}...'")
 
     @pytest.mark.unit
-    def test_sai_edge_002_vendor_agent_empty_task_data_prompt(self):
+    @pytest.mark.asyncio
+    async def test_sai_edge_002_vendor_agent_empty_task_data_prompt(self):
         """
         SAI-EDGE-002: Vendor onboarding agent handles None task_data gracefully
         Title: Vendor agent returns safe default prompt when no task_data
@@ -1277,12 +1281,12 @@ class TestSpecializedAgents:
         session_context = self._create_session_context("edge_vendor@example.com")
         agent = VendorOnboardingAgent(session_context=session_context)
 
-        prompt = agent._get_user_prompt(task_data=None)
+        prompt = await agent._get_user_prompt(task_data=None)
         assert isinstance(prompt, str)
         assert len(prompt) > 0
         assert "vendor" in prompt.lower()
 
-        prompt_empty = agent._get_user_prompt(task_data={})
+        prompt_empty = await agent._get_user_prompt(task_data={})
         assert isinstance(prompt_empty, str)
         assert len(prompt_empty) > 0
 

@@ -393,7 +393,7 @@ async def test_successful_chat_through_provider(patched_settings):
 # LLM-PROV-008: Module-Level Singleton Documents Import-Time Risk
 # ============================================================================
 @pytest.mark.unit
-def test_module_level_singleton_exists_and_is_returned_by_getter():
+def test_module_level_singleton_exists_and_is_returned_by_getter(monkeypatch):
     """LLM-PROV-008: Module-Level Singleton Documents Import-Time Risk
 
     Verify that get_llm_client() returns the module-level singleton created
@@ -414,6 +414,9 @@ def test_module_level_singleton_exists_and_is_returned_by_getter():
     3. Singleton pattern confirmed
     """
     import finbot.core.llm.client as client_module
+
+    monkeypatch.setattr(client_module.settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(client_module, "_default_client", None)
 
     assert hasattr(client_module, "llm_client"), (
         "Module-level singleton 'llm_client' not found. "

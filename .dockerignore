@@ -13,10 +13,12 @@ venv
 # Environment & secrets
 .env
 .env.*
+certs/
 !.env.example
 
 # Databases
 *.db
+data/experiments.db*
 
 # IDE
 .cursor

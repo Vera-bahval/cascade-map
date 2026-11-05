@@ -1,5 +1,8 @@
 """Vendor Portal Web Routes"""
 
+import hashlib
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -221,6 +224,24 @@ async def vendor_assistant(
         "pages/assistant.html",
         {
             "request": request,
+            "vendor_context": session_context.current_vendor,
+            "is_multi_vendor": session_context.is_multi_vendor_user(),
+        },
+    )
+
+
+@router.get("/experiments", response_class=HTMLResponse, name="vendor_experiments")
+async def vendor_experiments(
+    request: Request, session_context: SessionContext = Depends(get_session_context)
+):
+    """Experiment workbench is session-scoped and needs no selected vendor."""
+    script = Path(__file__).resolve().parents[3] / "static/js/vendor/experiments.js"
+    return template_response(
+        request,
+        "pages/experiments.html",
+        {
+            "request": request,
+            "workbench_script_version": hashlib.sha256(script.read_bytes()).hexdigest()[:12],
             "vendor_context": session_context.current_vendor,
             "is_multi_vendor": session_context.is_multi_vendor_user(),
         },

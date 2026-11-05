@@ -84,17 +84,18 @@ No setup required:
 
 ### Docker (quickest local setup)
 
-Requires only Docker. Runs the app, Redis, and optionally PostgreSQL.
+Requires only Docker. The app and experiment worker share one container;
+Redis and optional PostgreSQL run separately.
 
 ```bash
 cp .env.example .env
 # Edit .env: add your OPENAI_API_KEY at minimum
 
 # SQLite (default, zero-config):
-docker compose up
+docker compose up --build --remove-orphans
 
 # PostgreSQL (set DATABASE_TYPE=postgresql in .env first):
-docker compose --profile postgres up
+docker compose --profile postgres up --build --remove-orphans
 ```
 
 Platform runs at [http://localhost:8000](http://localhost:8000)
@@ -104,7 +105,7 @@ Playwright support (optional)
 To enable OG image rendering (share cards), build the full image with Playwright + Chromium:
 
 ```bash
-DOCKER_TARGET=app-full docker compose up --build
+DOCKER_TARGET=app-full docker compose up --build --remove-orphans
 ```
 
 ### Local dev (without Docker)
@@ -134,6 +135,11 @@ Platform runs at [http://localhost:8000](http://localhost:8000)
 > Without them, you can still explore the UI and codebase.
 
 ## Configuration
+
+### CascadeMap experiments
+
+Run `./start.sh` to start the app and experiment worker together. Open the URL
+printed in the terminal. [Usage and metrics](docs/experiments.md).
 
 Key environment variables (see `[.env.example](.env.example)` for the full template):
 
