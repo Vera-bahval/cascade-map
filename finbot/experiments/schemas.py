@@ -1,7 +1,7 @@
 """Experiment input schemas."""
 
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class InputModel(BaseModel):
@@ -32,13 +32,21 @@ class ExperimentConfig(InputModel):
     max_iterations: int = Field(default=10, ge=1, le=30)
     scenario_timeout_seconds: int = Field(default=1800, ge=30, le=7200)
     repeats: int = Field(default=1, ge=1, le=20)
+    scenario_concurrency: int = Field(default=2, ge=1, le=8, strict=True)
     scenario_ids: list[str] = Field(default_factory=list, max_length=7)
     input_price: float | None = Field(default=None, ge=0, le=1000000)
     output_price: float | None = Field(default=None, ge=0, le=1000000)
     cached_input_price: float | None = Field(default=None, ge=0, le=1000000)
-    currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
+    currency: str = Field(default="RUB", pattern=r"^[A-Z]{3}$")
     price_source: str = Field(default="Введено пользователем", max_length=300)
     price_checked_at: str | None = Field(default=None, max_length=40)
+
+    @field_validator("scenario_concurrency", mode="before")
+    @classmethod
+    def concurrency_from_form(cls, value):
+        if isinstance(value, str) and value.strip() in {str(n) for n in range(1, 9)}:
+            return int(value.strip())
+        return value
 
     @model_validator(mode="after")
     def unique_scenarios(self):
@@ -78,3 +86,25 @@ class AssessmentInput(InputModel):
         "needs_review",
     ]
     reason: str = Field(min_length=10, max_length=4000)
+    cause_codes: (
+        list[
+            Literal[
+                "unverified_claim",
+                "ignored_evidence",
+                "misinterpreted_agent",
+                "action_plan_mismatch",
+                "other",
+                "unknown",
+            ]
+        ]
+        | None
+    ) = Field(default=None, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_causes(self):
+        codes = self.cause_codes or []
+        if len(codes) != len(set(codes)):
+            raise ValueError("Причины не должны повторяться")
+        if "unknown" in codes and len(codes) > 1:
+            raise ValueError("Неизвестную причину нельзя сочетать с установленными причинами")
+        return self

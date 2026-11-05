@@ -24,6 +24,7 @@ services:
       - sqlite_data:/app/data
       - uploads:/app/uploads
       - cache:/app/cache
+      - ${FINBOT_RESULTS_CERT_DIR:-./certs}:/app/certs:ro
     restart: unless-stopped
 
   redis:

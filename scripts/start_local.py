@@ -17,18 +17,9 @@ def available_port(host, first):
     if not 1 <= first <= 65535:
         raise ValueError("Порт должен быть от 1 до 65535")
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    for port in range(first, min(first + 100, 65536)):
-        with socket.socket(family, socket.SOCK_STREAM) as listener:
-            try:
-                listener.bind((host, port))
-            except OSError as exc:
-                import errno
-
-                if exc.errno != errno.EADDRINUSE:
-                    raise
-            else:
-                return port
-    raise RuntimeError("Не найден свободный порт")
+    with socket.socket(family, socket.SOCK_STREAM) as listener:
+        listener.bind((host, first))
+    return first
 
 
 def stop_processes(processes, timeout=15):
@@ -116,7 +107,10 @@ def serve(host, port, environment, *, container=False):
             ]
         web = start(web_arguments)
         worker = start(["-m", "finbot.experiments.worker"])
-        display_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+        display_host = environment.get("FINBOT_DISPLAY_HOST") or {
+            "0.0.0.0": "localhost",
+            "::": "::1",
+        }.get(host, host)
         if ":" in display_host:
             display_host = f"[{display_host}]"
         print(f"\nЭксперименты: http://{display_host}:{port}/vendor/experiments", flush=True)
@@ -146,6 +140,7 @@ def main():
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
+    explicit_host = args.host is not None
     args.host = args.host or ("0.0.0.0" if args.container else "127.0.0.1")
     args.port = args.port if args.port is not None else (8000 if args.container else settings.PORT)
     try:
@@ -167,10 +162,18 @@ def main():
         "PYTHONUNBUFFERED": "1",
     }
     if not args.container:
+        if not explicit_host:
+            host = "localhost"
+            environment["FINBOT_DISPLAY_HOST"] = host
         environment["MAGIC_LINK_BASE_URL"] = f"http://{host}:{port}"
+        if settings.FINBOT_EXPERIMENTS_DB.startswith("/app/") and ROOT != Path("/app"):
+            parser.exit(
+                1,
+                "FINBOT_EXPERIMENTS_DB указывает внутрь Docker. Запустите docker compose up -d "
+                "или укажите путь к локальной experiments.db. Хранилища Docker и локального запуска различаются.\n",
+            )
+    print(f"Хранилище экспериментов: {Path(settings.FINBOT_EXPERIMENTS_DB).resolve()}", flush=True)
     environment.setdefault("LOG_LEVEL", "WARNING")
-    if port != args.port:
-        print(f"Порт {args.port} занят, используется {port}.", flush=True)
     return serve(args.host, port, environment, container=args.container)
 
 

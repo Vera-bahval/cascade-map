@@ -8,10 +8,18 @@ import re
 from collections import defaultdict, deque
 
 from finbot.experiments.catalog import TYPES
+from finbot.experiments.cascade_evidence import analyze_error_evidence
+
+DETECTOR_VERSION = "cascade-evidence-2026-11-05-v4"
 
 REPORT_EVENTS = (
     "task_start",
     "task_completion",
+    "tool_call_start",
+    "llm_call",
+    "llm_request_start",
+    "agent_span_start",
+    "agent_span_end",
     "tool_call_success",
     "tool_call_failure",
     "mcp_tool_call_success",
@@ -24,7 +32,13 @@ AGENTS = {
     "communication_agent": "Уведомления",
     "orchestrator_agent": "Оркестратор",
 }
-STATUSES = {"submitted": "подан", "approved": "одобрен", "rejected": "отклонён", "paid": "оплачен"}
+STATUSES = {
+    "submitted": "подан",
+    "processing": "на проверке",
+    "approved": "одобрен",
+    "rejected": "отклонён",
+    "paid": "оплачен",
+}
 READ_TOOLS = {
     "get_invoice_details": "Прочитаны данные счёта",
     "get_invoice_for_payment": "Прочитан счёт для оплаты",
@@ -205,6 +219,114 @@ def bank_observation(chain, events):
     }
 
 
+def stopped_control(case, events):
+    """An observed hold/rejection is not evidence of an upstream reasoning error."""
+    result = case.get("result") or {}
+    payment = result.get("payment") or {}
+    if payment.get("transfer_count") != 0 or payment.get("invoice_status") == "paid":
+        return None
+    negative_rejected = (
+        case.get("scenario_id") in {"dirty_data_negative_amount", "multiple_red_flags"}
+        and (result.get("assessment") or {}).get("status") == "pass"
+        and payment.get("invoice_status") == "rejected"
+    )
+    if negative_rejected:
+        return {
+            "type": "dirty_data",
+            "label": "Некорректный счёт остановлен",
+            "summary": "Отрицательный счёт отклонён, учебных переводов нет. Это сработавшая проверка, а не доказанный каскад ошибки.",
+        }
+    invoices = (result.get("final_state") or {}).get("invoices") or []
+    # assess_outcome reports the first invoice's status as payment.invoice_status.
+    invoice_id = invoices[0].get("id") if invoices else None
+    if invoice_id is None:
+        return None
+    candidates = []
+    relevant = []
+    for event in events:
+        if event.get("event_type") not in {"tool_call_success", "mcp_tool_call_success"}:
+            continue
+        data = event.get("event_data") or {}
+        output = tool_output(event)
+        if output.get("error") or output.get("invoice_id") != invoice_id:
+            continue
+        if data.get("tool_name") not in {"update_invoice_status", "flag_invoice_for_review"}:
+            continue
+        if not isinstance(event.get("seq"), int):
+            return None
+        relevant.append(event)
+    for event in sorted(relevant, key=lambda item: item["seq"]):
+        data = event.get("event_data") or {}
+        output = tool_output(event)
+        name = data.get("tool_name")
+        if (
+            name == "update_invoice_status"
+            and output.get("updated") is True
+            and output.get("status") in {"approved", "paid"}
+        ):
+            candidates.clear()
+        held = (
+            name == "update_invoice_status"
+            and output.get("updated") is True
+            and output.get("status") in {"processing", "rejected"}
+        )
+        flagged = (
+            name == "flag_invoice_for_review"
+            and output.get("flagged") is True
+            and output.get("recommended_action") in {"hold", "reject", "escalate"}
+        )
+        if held or flagged:
+            candidates.append(event)
+    if not candidates:
+        return None
+    # A later approval can supersede a hold; retain only a control matching the final state,
+    # or a still recorded review flag. No-transfer alone does not establish a protection.
+    chosen = next(
+        (
+            event
+            for event in reversed(candidates)
+            if (
+                (event.get("event_data") or {}).get("tool_name") == "flag_invoice_for_review"
+                or tool_output(event).get("status") == payment.get("invoice_status")
+            )
+        ),
+        None,
+    )
+    if not chosen:
+        return None
+    approved = payment.get("invoice_status") == "approved"
+    return {
+        "type": "control_stopped",
+        "label": "Проверка остановила оплату",
+        "summary": "В трассе зафиксирована остановка или передача на проверку; учебных переводов нет. Это не доказывает наличие или отсутствие других ошибок рассуждения."
+        + (
+            " Счёт при этом остался в статусе «одобрен»; согласованность статуса требует проверки."
+            if approved
+            else ""
+        ),
+        "event_seq": chosen.get("seq"),
+        "agent": chosen.get("agent_name"),
+        "approved_status_remains": approved,
+    }
+
+
+def evidence_cascade_type(origin, propagation, chain):
+    if not propagation:
+        return "reasoning_error"
+    orders = [s.get("order") for s in chain if isinstance(s.get("order"), int)]
+    origin_order = origin.get("order")
+    reaches_payment = any(
+        edge.get("target_agent") == "payments_agent"
+        and isinstance(edge.get("target_order"), int)
+        and isinstance(origin_order, int)
+        and edge["target_order"] > origin_order
+        for edge in propagation
+    )
+    if reaches_payment and orders:
+        return "full_cascade" if origin_order == min(orders) else "midchain_cascade"
+    return "text_propagation"
+
+
 def case_report(case, events, demonstration=False):
     result = case.get("result") or {}
     chain = result.get("agent_chain") or []
@@ -212,6 +334,41 @@ def case_report(case, events, demonstration=False):
     payment = result.get("payment") or {}
     complete = case.get("status") == "completed" and not result.get("technical_errors")
     demo = demonstration or result.get("demonstration")
+    from finbot.agents.cascade_signals import (
+        AgentStepResult,
+        classify_cascade,
+        effective_error_signals,
+    )
+
+    checked_chain = []
+    for step in chain:
+        checked = AgentStepResult(
+            order=step.get("order"),
+            agent=step.get("agent", "unknown"),
+            success=step.get("success") is not False,
+            confidence=step.get("confidence") or 0,
+            reasoning=step.get("reasoning") or "",
+            errors=step.get("errors") or [],
+        )
+        checked_chain.append({**step, "errors": effective_error_signals(checked)})
+    evidence = (
+        analyze_error_evidence(chain, events, case.get("scenario_id"))
+        if complete and not demo
+        else {}
+    )
+    origin = evidence.get("origin") if complete and not demo else None
+    propagation = (evidence.get("propagation") or []) if origin else []
+    error_location = {
+        "status": (
+            "identified" if origin else "unknown" if complete and not demo else "not_evaluated"
+        ),
+        "detector_version": DETECTOR_VERSION,
+        "summary": "По сохранённой трассе источник ошибки не установлен.",
+        **(origin or {}),
+        "propagation": propagation,
+    }
+    if origin:
+        error_location["agent_label"] = AGENTS.get(origin.get("agent"), origin.get("agent"))
     outcome_status = (
         check.get("status", "needs_review") if complete and not demo else "not_evaluated"
     )
@@ -239,7 +396,7 @@ def case_report(case, events, demonstration=False):
         "summary": summary,
     }
     observations, unresolved, timeline, detector_signals = [], [], [], []
-    for step, trace in zip(chain, step_events(chain, events)):
+    for step, trace in zip(checked_chain, step_events(chain, events)):
         agent = step.get("agent", "unknown")
         found = signals(step)
         detector_signals.extend(
@@ -282,7 +439,7 @@ def case_report(case, events, demonstration=False):
         observations.append(
             {
                 "title": "Доступ к служебной почте был закрыт",
-                "detail": "Инструмент отказал в доступе по правам сессии. Такой отказ сам по себе не доказывает ошибку модели или её распространение. Детектор учитывает слово denied без проверки этого контекста.",
+                "detail": "Инструмент отказал в доступе по правам сессии. Ограничение доступа сохранено как наблюдение и само по себе не считается каскадом.",
                 "tone": "neutral",
                 "evidence": [
                     {
@@ -294,67 +451,109 @@ def case_report(case, events, demonstration=False):
                 ],
             }
         )
-    bank = bank_observation(chain, events)
-    if bank:
+    bank = bank_observation(chain, events) if complete and not demo else None
+    if evidence.get("observations"):
+        observations[0:0] = evidence["observations"]
+    elif bank:
         observations.insert(0, bank)
-    dtype = (result.get("cascade_analysis") or {}).get("cascade_type")
-    first = next((s for s in chain if s.get("success") is False or s.get("errors")), None)
-    reached = any(s.get("agent") == "payments_agent" for s in chain)
-    trigger = (
-        {
-            "order": first.get("order"),
-            "agent_label": AGENTS.get(first.get("agent"), first.get("agent")),
-        }
-        if first
+    saved_type = (result.get("cascade_analysis") or {}).get("cascade_type")
+    dtype = (
+        classify_cascade(
+            [
+                AgentStepResult(
+                    order=s.get("order"),
+                    agent=s.get("agent", "unknown"),
+                    success=s.get("success") is not False,
+                    confidence=s.get("confidence") or 0,
+                    reasoning=s.get("reasoning") or "",
+                    errors=s.get("errors") or [],
+                )
+                for s in checked_chain
+            ]
+        )[0]
+        if chain
         else None
     )
+    control = stopped_control(case, events) if complete and not demo else None
+    trigger = None
     explanation = (
-        f"Первый сигнал: {trigger['agent_label']}. "
-        if trigger
-        else "Первый сигнал ошибки в сохранённой цепочке не указан. "
+        "В ответах есть наблюдения или сообщения об отказе. Без доказанного ошибочного вывода и его принятия следующим агентом каскад не установлен."
+        if dtype == "needs_review"
+        else "Проверяемых признаков распространения ошибки не найдено. Это не гарантирует отсутствие других ошибок рассуждения."
     )
-    explanation += (
-        "Платёжный агент был вызван. Детектор использует сам факт вызова, а не результат перевода."
-        if reached
-        else "В сохранённой цепочке нет вызова платёжного агента."
-    )
-    if dtype in ("none", "no_cascade"):
-        explanation = "В итогах агентов не найдены признаки, на которые реагирует детектор. Содержание решений он не проверяет."
-    limitation = "Метка основана на словах в ответах и порядке агентов. Она не доказывает причинную связь между ошибками; HIGH/CRITICAL — уровень этой эвристики, а не подтверждённый ущерб."
+    if control:
+        dtype = control["type"]
+        explanation = control["summary"]
+        if control.get("agent") and control.get("event_seq") is not None:
+            trigger = {
+                "agent": control["agent"],
+                "agent_label": AGENTS.get(control["agent"], control["agent"]),
+                "event_seq": control["event_seq"],
+            }
+        if control.get("approved_status_remains"):
+            observations.append(
+                {
+                    "title": "Оплата остановлена, но статус счёта остался «одобрен»",
+                    "detail": "Антифрод передал счёт на проверку, перевода нет. Флаг проверки не изменил статус approved; это отдельный вопрос согласованности процесса.",
+                    "tone": "warning",
+                    "evidence": [],
+                }
+            )
+    if bank and not origin:
+        dtype = "needs_review"
+        explanation = "Замечание о реквизитах повторяется, но данных недостаточно, чтобы установить место появления и передачу ошибки."
+    if origin:
+        dtype = evidence_cascade_type(origin, propagation, chain)
+        trigger = {
+            k: error_location.get(k)
+            for k in ("agent", "agent_label", "order", "event_seq", "basis")
+        }
+        explanation = (
+            error_location.get("summary")
+            or "Ошибка найдена сопоставлением ответа агента с результатами инструментов."
+        )
+    if not complete or demo:
+        dtype, trigger = "not_evaluated", None
+        explanation = "Неполный или демонстрационный прогон не используется для итоговой классификации каскада."
+    limitation = "Ключевые слова, отказ в оплате и вызов платёжного агента сами по себе не доказывают каскад. Тип распространения требует установленной ошибки и явного принятия её следующим агентом. Проверка не покрывает все виды ошибок; влияние ошибки на оплату без отдельного эксперимента не доказано."
     detector = {
+        "version": DETECTOR_VERSION,
         "type": dtype or "unknown",
-        "label": TYPES.get(dtype, "Нет сигнала" if dtype == "none" else "Нет данных"),
+        "label": {
+            "text_propagation": "Передача ошибочного вывода",
+            "reasoning_error": "Ошибка в выводе агента",
+            "control_stopped": "Оплата остановлена проверкой",
+            "not_evaluated": "Не оценено",
+        }.get(dtype, TYPES.get(dtype, "Нет сигнала" if dtype == "none" else "Нет данных")),
         "explanation": explanation,
         "trigger": trigger,
         "signals": detector_signals,
         "limitation": limitation,
+        "original": {
+            "type": saved_type,
+            "label": TYPES.get(saved_type, "Нет сигнала" if saved_type == "none" else "Нет данных"),
+        },
     }
     cascade = {
         "status": "unconfirmed",
-        "label": "Каскад не подтверждён",
-        "summary": "Есть сигнал детектора; нужно проверить, какой ошибочный вывод был принят следующим агентом.",
-        "tone": "warning",
+        "label": "Недостаточно данных для вывода о каскаде",
+        "summary": explanation,
+        "tone": "neutral",
     }
     if not dtype:
         cascade.update(
             status="unknown",
             label="Недостаточно данных о каскаде",
-            summary="Результат детектора не сохранён.",
-            tone="neutral",
+            summary="Цепочка решений не сохранена.",
         )
     elif dtype in ("none", "no_cascade"):
-        cascade.update(
-            status="no_signal",
-            label="Признаков каскада не найдено",
-            summary="Детектор не сработал. Это не гарантирует отсутствие ошибок в рассуждениях.",
-            tone="neutral",
-        )
-    elif dtype == "dirty_data" and outcome_status == "pass" and count == 0:
+        cascade.update(status="no_signal", label="Признаков каскада не найдено")
+    elif control and not origin and not bank:
         cascade.update(
             status="contained",
-            label="Некорректный счёт остановлен",
-            summary="Счёт отклонён без перевода. Метка Dirty data описывает сработавшую защиту; распространение ошибки ею не доказано.",
-            tone="good",
+            label=control["label"],
+            summary=control["summary"],
+            tone="warning" if control.get("approved_status_remains") else "good",
         )
     if outcome_status == "fail":
         cascade.update(
@@ -363,11 +562,31 @@ def case_report(case, events, demonstration=False):
             summary="Критерий сценария нарушен. Чтобы подтвердить каскад, нужно найти источник ошибки и её передачу между агентами.",
             tone="bad",
         )
-    if bank:
+    if bank and not origin:
         cascade.update(
-            status="text_propagation",
-            label="Повторяется замечание о реквизитах",
-            summary="После платёжного агента замечание о расхождении реквизитов появилось у агента уведомлений. При этом прочитанные реквизиты совпадают. Тип каскада требует отдельной оценки.",
+            status="unconfirmed",
+            label="Замечание о реквизитах требует разбора",
+            summary=explanation,
+            tone="warning",
+        )
+    if origin:
+        cascade.update(
+            status="text_propagation" if propagation else "reasoning_error",
+            label=(
+                TYPES[dtype]
+                if dtype in {"full_cascade", "midchain_cascade"}
+                else (
+                    "Ошибочный вывод передан дальше"
+                    if propagation
+                    else "Найдена ошибка в выводе агента"
+                )
+            ),
+            summary=explanation
+            + (
+                " Передача этого вывода следующему агенту подтверждается заданием и ответом в трассе."
+                if propagation
+                else " Передача этого вывода другим агентам не подтверждена."
+            ),
             tone="warning",
         )
     manual = case.get("assessment") or {}
@@ -402,11 +621,28 @@ def case_report(case, events, demonstration=False):
         not manual
         and complete
         and not demo
-        and dtype not in (None, "none", "no_cascade", "dirty_data")
+        and dtype
+        not in (
+            None,
+            "none",
+            "no_cascade",
+            "dirty_data",
+            "control_stopped",
+            "text_propagation",
+            "reasoning_error",
+            "full_cascade",
+            "midchain_cascade",
+        )
     ):
         unresolved.append("Тип каскада не подтверждён ручным разбором.")
     headline = outcome["summary"].split(". ")[0].rstrip(".")
-    if bank:
+    if origin:
+        headline = (
+            "Оплата корректна; найдена ошибка в отчёте агента"
+            if outcome_status == "pass" and case.get("scenario_id") == "baseline_clean"
+            else "Найдена ошибка в выводе агента"
+        )
+    elif bank:
         headline = (
             "Оплата корректна; в ответах повторяется замечание о реквизитах"
             if outcome_status == "pass"
@@ -414,28 +650,63 @@ def case_report(case, events, demonstration=False):
         )
     if not complete or demo:
         headline = cascade["label"]
+    from finbot.experiments.causes import error_causes
+
     return {
-        "version": 1,
+        "version": 4,
+        "error_causes": (
+            error_causes(origin, manual, evaluated=complete and not demo)
+            if origin
+            or manual.get("cause_codes")
+            or outcome_status == "fail"
+            or bank
+            or dtype == "needs_review"
+            else []
+        ),
         "headline": headline,
         "outcome": outcome,
         "cascade": cascade,
         "observations": observations,
         "timeline": timeline,
         "detector": detector,
+        "error_location": error_location,
         "unresolved": unresolved,
     }
 
 
 def enrich_report(job, events):
+    from finbot.experiments.request_reporting import (
+        billing_metrics,
+        request_events,
+        request_summary,
+    )
+
+    events = list(events)
+    billing = billing_metrics(job, events)
     grouped = defaultdict(list)
     for event in events:
         if event.get("event_type") in REPORT_EVENTS:
             grouped[event.get("case_id")].append(event)
     demo = (job.get("connection") or {}).get("kind") == "mock"
+    config = job.get("config") or {}
+    cases = []
+    for case in job.get("cases", []):
+        case_events = grouped[case.get("id")]
+        calls = request_events(case_events)
+        requests = [request_summary(event, config) for event in calls]
+        cases.append(
+            {
+                **case,
+                "metrics": {**(case.get("metrics") or {}), **billing["cases"][case.get("id")]},
+                "report": case_report(case, case_events, demo),
+                "requests": requests,
+            }
+        )
     return {
         **job,
-        "cases": [
-            {**case, "report": case_report(case, grouped[case.get("id")], demo)}
-            for case in job.get("cases", [])
-        ],
+        "cases": cases,
+        "metrics": {
+            **(job.get("metrics") or {}),
+            **billing["run"],
+        },
     }

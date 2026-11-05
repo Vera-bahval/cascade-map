@@ -449,10 +449,8 @@
         document.getElementById('result-cascade-label').textContent = typeMeta.label;
         document.getElementById('result-cascade-summary').textContent = typeMeta.summary;
         document.getElementById('result-severity-text').textContent = typeMeta.severity;
-        const matched = analysis.cascade_type === scenario.expected_cascade_type;
-        document.getElementById('result-expected-match').innerHTML = matched
-            ? `<span class="text-vendor-accent">✓ matched expected (${scenario.expected_cascade_type})</span>`
-            : `<span class="text-vendor-warning">⚠ expected ${scenario.expected_cascade_type}, observed ${analysis.cascade_type}</span>`;
+        document.getElementById('result-expected-match').textContent =
+            `Scenario category: ${scenario.expected_cascade_type}. This describes the test hypothesis, not a verified model error.`;
 
         // Invoice panel
         document.getElementById('result-invoice').innerHTML = `

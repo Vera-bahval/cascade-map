@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 import json
+import hashlib
 import os
+import secrets
 import sqlite3
 import time
 import uuid
@@ -55,9 +57,51 @@ class Store:
             CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status,updated);
             CREATE UNIQUE INDEX IF NOT EXISTS jobs_idempotency ON jobs(owner,idempotency_key) WHERE idempotency_key IS NOT NULL;
             CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, seen REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS worker_capacity (
+                id TEXT PRIMARY KEY, max_jobs INTEGER NOT NULL, max_cases INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS case_slots (
+                case_id TEXT PRIMARY KEY, job_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                token_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, expires REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS result_sync (
+                job_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+                lease_id TEXT, lease_until REAL, last_error TEXT, synced_at TEXT
+            );
             """)
         os.chmod(self.path, 0o600)
+
+    def workspace(self, token):
+        if not token or len(token) != 43:
+            return None
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.db() as db:
+            row = db.execute(
+                "SELECT owner FROM workspaces WHERE token_hash=? AND expires>?",
+                (digest, time.time()),
+            ).fetchone()
+        return row["owner"] if row else None
+
+    def remember_workspace(self, owner, lifetime, token=None):
+        if token is None:
+            token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.db() as db:
+            db.execute("DELETE FROM workspaces WHERE expires<=?", (time.time(),))
+            db.execute(
+                "INSERT INTO workspaces VALUES (?,?,?) ON CONFLICT(token_hash) "
+                "DO UPDATE SET expires=excluded.expires WHERE workspaces.owner=excluded.owner",
+                (digest, owner, time.time() + lifetime),
+            )
+        return token
+
+    def forget_workspace(self, owner):
+        with self.db() as db:
+            db.execute("DELETE FROM workspaces WHERE owner=?", (owner,))
 
     def cipher(self):
         if not self.key_path.exists():
@@ -206,7 +250,7 @@ class Store:
             result = self._public_job(json.loads(row["data"]), include_secret)
         return result
 
-    def list_jobs(self, owner, limit=200):
+    def list_jobs(self, owner, limit=200, *, include_cases=False):
         with self.db() as db:
             rows = db.execute(
                 "SELECT data FROM jobs WHERE owner=? ORDER BY updated DESC LIMIT ?", (owner, limit)
@@ -216,7 +260,8 @@ class Store:
             job = self._public_job(json.loads(row[0]))
             job["case_count"] = len(job["cases"])
             job["finished_cases"] = sum(c["status"] in TERMINAL for c in job["cases"])
-            job.pop("cases")
+            if not include_cases:
+                job.pop("cases")
             result.append(job)
         return result
 
@@ -232,6 +277,92 @@ class Store:
                 job["id"],
             ),
         )
+        if self._can_sync(job):
+            self._queue_result_sync(db, job["id"])
+
+    @staticmethod
+    def _can_sync(job):
+        return (
+            job.get("kind") == "experiment"
+            and job.get("status") in TERMINAL
+            and job.get("connection", {}).get("kind") != "mock"
+            and not job.get("metrics", {}).get("demonstration")
+        )
+
+    def _queue_result_sync(self, db, job_id):
+        db.execute(
+            """INSERT INTO result_sync(job_id,revision,status) VALUES (?,1,'pending')
+            ON CONFLICT(job_id) DO UPDATE SET revision=revision+1,status='pending',
+                attempts=0,next_attempt=0,lease_id=NULL,lease_until=NULL,last_error=NULL""",
+            (job_id,),
+        )
+
+    def request_result_sync(self, job_id):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            if not self._can_sync(json.loads(row[0])):
+                raise ValueError(
+                    "Отправка доступна для завершённых попыток эксперимента с моделью."
+                )
+            self._queue_result_sync(db, job_id)
+        return self.result_sync_statuses().get(job_id)
+
+    def result_sync_statuses(self):
+        with self.db() as db:
+            return {
+                row["job_id"]: {
+                    k: row[k] for k in ("status", "attempts", "last_error", "synced_at")
+                }
+                for row in db.execute(
+                    "SELECT job_id,status,attempts,last_error,synced_at FROM result_sync"
+                )
+            }
+
+    def claim_result_sync(self, lease_seconds=120):
+        now = time.time()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """SELECT * FROM result_sync WHERE
+                (status IN ('pending','error') AND next_attempt<=?)
+                OR (status='uploading' AND lease_until<?)
+                ORDER BY next_attempt,job_id LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            lease = uuid.uuid4().hex
+            db.execute(
+                """UPDATE result_sync SET status='uploading',lease_id=?,lease_until=?,
+                    attempts=attempts+1 WHERE job_id=?""",
+                (lease, now + lease_seconds, row["job_id"]),
+            )
+            return {
+                "job_id": row["job_id"],
+                "revision": row["revision"],
+                "lease_id": lease,
+                "attempts": row["attempts"] + 1,
+            }
+
+    def finish_result_sync(self, delivery, error=None):
+        with self.db() as db:
+            db.execute(
+                """UPDATE result_sync SET status=?,lease_id=NULL,lease_until=NULL,
+                    last_error=?,synced_at=?,next_attempt=?
+                    WHERE job_id=? AND revision=? AND lease_id=?""",
+                (
+                    "error" if error else "synced",
+                    error,
+                    None if error else stamp(),
+                    time.time() + min(3600, 5 * 2 ** min(delivery["attempts"], 10)) if error else 0,
+                    delivery["job_id"],
+                    delivery["revision"],
+                    delivery["lease_id"],
+                ),
+            )
 
     def update_job(self, job_id, **fields):
         forbidden = {
@@ -294,9 +425,52 @@ class Store:
             ).fetchall()
         return [{"seq": r[0], **json.loads(r[1])} for r in rows]
 
-    def claim_job(self, worker_id):
+    def billing_events(self, job_id):
+        """Read only usage and request identities; history never loads prompts or responses."""
+        with self.db() as db:
+            rows = db.execute(
+                """SELECT seq,
+                   json_extract(data, '$.case_id') AS case_id,
+                   json_extract(data, '$.event_type') AS event_type,
+                   CASE WHEN json_type(data, '$.record.usage')='object'
+                        THEN json_extract(data, '$.record.usage') ELSE '{}' END AS usage,
+                   COALESCE(json_extract(data, '$.record.metadata.interaction_id'),
+                            json_extract(data, '$.event_data.interaction_id')) AS interaction_id
+                   FROM events WHERE job_id=?
+                   AND json_extract(data, '$.event_type') IN ('llm_call','llm_request_start')
+                   ORDER BY seq""",
+                (job_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            usage = json.loads(row["usage"]) if isinstance(row["usage"], str) else {}
+            result.append({
+                "seq": row["seq"],
+                "case_id": row["case_id"],
+                "event_type": row["event_type"],
+                "record": {
+                    "usage": usage if isinstance(usage, dict) else {},
+                    "metadata": {"interaction_id": row["interaction_id"]},
+                },
+            })
+        return result
+
+    def claim_job(self, worker_id, max_running=None):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
+            if max_running is not None:
+                shared_limit = db.execute(
+                    "SELECT MIN(c.max_jobs) FROM worker_capacity c JOIN workers w ON w.id=c.id "
+                    "WHERE w.seen>?",
+                    (time.time() - 45,),
+                ).fetchone()[0]
+                max_running = min(max_running, shared_limit or max_running)
+            if (
+                max_running is not None
+                and db.execute("SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[0]
+                >= max_running
+            ):
+                return None
             row = db.execute(
                 "SELECT data FROM jobs WHERE status='queued' ORDER BY updated LIMIT 1"
             ).fetchone()
@@ -307,17 +481,72 @@ class Store:
             self._write_job(db, job)
             return self._public_job(job, True)
 
-    def heartbeat(self, worker_id):
+    def heartbeat(self, worker_id, *, max_jobs=None, max_cases=None):
         with self.db() as db:
             db.execute(
                 "INSERT INTO workers VALUES (?,?) ON CONFLICT(id) DO UPDATE SET seen=excluded.seen",
                 (worker_id, time.time()),
             )
+            if max_jobs is not None and max_cases is not None:
+                db.execute(
+                    "INSERT INTO worker_capacity VALUES (?,?,?) ON CONFLICT(id) "
+                    "DO UPDATE SET max_jobs=excluded.max_jobs,max_cases=excluded.max_cases",
+                    (worker_id, max_jobs, max_cases),
+                )
 
     def worker_status(self):
         with self.db() as db:
             seen = db.execute("SELECT MAX(seen) FROM workers").fetchone()[0]
-        return {"online": seen is not None and time.time() - seen < 45, "last_seen": seen}
+            capacity = db.execute(
+                "SELECT MIN(c.max_jobs),MIN(c.max_cases) FROM worker_capacity c "
+                "JOIN workers w ON w.id=c.id WHERE w.seen>?",
+                (time.time() - 45,),
+            ).fetchone()
+            active_jobs = db.execute("SELECT COUNT(*) FROM jobs WHERE status='running'").fetchone()[
+                0
+            ]
+            active_cases = db.execute(
+                "SELECT COUNT(*) FROM case_slots s JOIN jobs j ON j.id=s.job_id "
+                "WHERE j.status='running'"
+            ).fetchone()[0]
+        return {
+            "online": seen is not None and time.time() - seen < 45,
+            "last_seen": seen,
+            "max_parallel_jobs": capacity[0],
+            "max_parallel_cases": capacity[1],
+            "active_jobs": active_jobs,
+            "active_cases": active_cases,
+        }
+
+    def acquire_case_slot(self, job_id, case_id, limit):
+        """Reserve a global process slot under the same SQLite write lock."""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            shared_limit = db.execute(
+                "SELECT MIN(c.max_cases) FROM worker_capacity c JOIN workers w ON w.id=c.id "
+                "WHERE w.seen>?",
+                (time.time() - 45,),
+            ).fetchone()[0]
+            limit = min(limit, shared_limit or limit)
+            row = db.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                return False
+            job = json.loads(row[0])
+            if job["status"] != "running" or job.get("cancel_requested"):
+                return False
+            if not any(c["id"] == case_id and c["status"] == "queued" for c in job["cases"]):
+                return False
+            db.execute(
+                "DELETE FROM case_slots WHERE job_id NOT IN (SELECT id FROM jobs WHERE status='running')"
+            )
+            if db.execute("SELECT COUNT(*) FROM case_slots").fetchone()[0] >= limit:
+                return False
+            cursor = db.execute("INSERT OR IGNORE INTO case_slots VALUES (?,?)", (case_id, job_id))
+            return cursor.rowcount == 1
+
+    def release_case_slot(self, job_id, case_id):
+        with self.db() as db:
+            db.execute("DELETE FROM case_slots WHERE job_id=? AND case_id=?", (job_id, case_id))
 
     def cancelled(self, job_id):
         return bool(self.get_job(job_id).get("cancel_requested"))
@@ -347,6 +576,7 @@ class Store:
             if case["status"] not in TERMINAL:
                 case["status"] = "interrupted"
         self._write_job(db, job)
+        db.execute("DELETE FROM case_slots WHERE job_id=?", (job["id"],))
 
     def recover_stale_jobs(self, seconds=90):
         with self.db() as db:
@@ -367,3 +597,4 @@ class Store:
             ).fetchall():
                 self._interrupt(db, row)
             db.execute("DELETE FROM workers WHERE id=?", (worker_id,))
+            db.execute("DELETE FROM worker_capacity WHERE id=?", (worker_id,))

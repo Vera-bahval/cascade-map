@@ -8,12 +8,13 @@ import pytest
 from scripts import start_local as launcher
 
 
-def test_busy_port_uses_next_without_ignoring_other_errors():
+def test_busy_port_fails_without_silently_switching_address():
     listener = MagicMock()
     listener.__enter__.return_value = listener
-    listener.bind.side_effect = [OSError(errno.EADDRINUSE, "busy"), None]
+    listener.bind.side_effect = OSError(errno.EADDRINUSE, "busy")
     with patch.object(launcher.socket, "socket", return_value=listener):
-        assert launcher.available_port("127.0.0.1", 8000) == 8001
+        with pytest.raises(OSError):
+            launcher.available_port("127.0.0.1", 8000)
         listener.bind.side_effect = PermissionError(errno.EACCES, "denied")
         with pytest.raises(PermissionError):
             launcher.available_port("127.0.0.1", 8000)
@@ -136,3 +137,38 @@ def test_cleanup_kills_process_group_after_grace_period():
         ((1234, signal.SIGTERM),),
         ((1234, signal.SIGKILL),),
     ]
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_native_launcher_preserves_hostname_choice(monkeypatch, tmp_path, explicit):
+    from finbot.config import settings
+
+    monkeypatch.setattr(settings, "FINBOT_EXPERIMENTS_DB", str(tmp_path / "experiments.db"))
+    arguments = ["start_local.py", "--port", "8123"]
+    if explicit:
+        arguments += ["--host", "127.0.0.1"]
+    with (
+        patch.object(launcher.sys, "argv", arguments),
+        patch.object(launcher, "available_port", return_value=8123),
+        patch.object(launcher, "serve", return_value=0) as serve,
+    ):
+        assert launcher.main() == 0
+    _, port, environment = serve.call_args.args
+    assert port == 8123
+    hostname = "127.0.0.1" if explicit else "localhost"
+    assert environment["MAGIC_LINK_BASE_URL"] == f"http://{hostname}:8123"
+
+
+def test_native_launcher_explains_docker_only_store(monkeypatch, capsys):
+    from finbot.config import settings
+
+    monkeypatch.setattr(settings, "FINBOT_EXPERIMENTS_DB", "/app/data/experiments.db")
+    with (
+        patch.object(launcher.sys, "argv", ["start_local.py"]),
+        patch.object(launcher, "available_port", return_value=8000),
+        patch.object(launcher, "serve") as serve,
+        pytest.raises(SystemExit),
+    ):
+        launcher.main()
+    serve.assert_not_called()
+    assert "Docker" in capsys.readouterr().err

@@ -1,10 +1,9 @@
-"""Serial execution with disposable business databases.
+"""Experiment execution with disposable business databases.
 
 Process-local patches require a dedicated worker, not a web background task.
 """
 
 import asyncio
-import hashlib
 import importlib
 import json
 import re
@@ -12,13 +11,15 @@ import tempfile
 import time
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from statistics import median
 from unittest.mock import patch
 from uuid import uuid4
 
 
-from finbot.experiments.catalog import EXPECTATIONS as EXPECTED, RUBRIC_VERSION, versions
+from finbot.experiments.catalog import EXPECTATIONS as EXPECTED, scenario_catalog, versions
+from finbot.experiments.agent_spans import run_in_span, span_fields
+from finbot.experiments.pricing import calls_cost, request_cost, sum_costs
+from finbot.experiments.request_reporting import request_coverage_complete
 
 FIXTURE_BANK_ACCOUNT = "1234567890"
 
@@ -46,15 +47,6 @@ def safe_json(value, secrets=()):
             )
     encoded = re.sub(r"\bsk-[A-Za-z0-9_-]{16,}\b", "[REDACTED]", encoded)
     return json.loads(encoded)
-
-
-def scenario_catalog():
-    path = Path(__file__).resolve().parents[1] / "agents/cascade_scenarios.json"
-    content = path.read_bytes()
-    return (
-        json.loads(content)["scenarios"],
-        hashlib.sha256(content + RUBRIC_VERSION.encode()).hexdigest(),
-    )
 
 
 def assess_outcome(scenario, state, detector):
@@ -144,7 +136,7 @@ def assess_outcome(scenario, state, detector):
     return payment, assessment
 
 
-def metrics_from_calls(calls, duration):
+def metrics_from_calls(calls, duration, config=None, *, complete=True):
     result = {
         "llm_calls": len(calls),
         "llm_failures": sum(not c.get("success", False) for c in calls),
@@ -174,29 +166,14 @@ def metrics_from_calls(calls, duration):
             missing += result["reasoning_usage_missing_calls"]
         if missing:
             result[name] = None
+    if config is not None:
+        result.update(calls_cost(calls, config, complete=complete))
     return result
 
 
 def priced_cost(metrics, config):
-    """Usage is not a bill: return a tariff estimate only when fully measured."""
-    if metrics.get("usage_missing_calls") or metrics.get("input_tokens") is None:
-        return None
-    if config.get("input_price") is None or config.get("output_price") is None:
-        return None
-    if metrics.get("cached_input_tokens") is None:
-        return None
-    cached = metrics["cached_input_tokens"]
-    if cached and config.get("cached_input_price") is None:
-        return None
-    return round(
-        (
-            (metrics["input_tokens"] - cached) * config["input_price"]
-            + cached * (config.get("cached_input_price") or 0)
-            + metrics["output_tokens"] * config["output_price"]
-        )
-        / 1_000_000,
-        8,
-    )
+    """Compatibility helper for a single usage record, not a mixed-request total."""
+    return request_cost(metrics, config)["cost"]
 
 
 def summarize_job(store, job):
@@ -221,6 +198,12 @@ def summarize_job(store, job):
         if c.get("status") == "completed" and c.get("duration_seconds") is not None
     ]
     totals["duration_seconds"] = sum(c.get("duration_seconds", 0) for c in cases)
+    if job.get("started_at"):
+        started = datetime.fromisoformat(job["started_at"].replace("Z", "+00:00"))
+        finished = datetime.fromisoformat(
+            (job.get("finished_at") or utcnow()).replace("Z", "+00:00")
+        )
+        totals["wall_duration_seconds"] = round(max(0, (finished - started).total_seconds()), 3)
     totals["median_duration_seconds"] = median(durations) if durations else None
     totals["completed_cases"] = sum(c["status"] == "completed" for c in cases)
     totals["failed_cases"] = sum(c["status"] == "failed" for c in cases)
@@ -228,8 +211,14 @@ def summarize_job(store, job):
     totals["needs_review_cases"] = sum(
         c.get("result", {}).get("assessment", {}).get("status") == "needs_review" for c in cases
     )
-    totals["cost"] = priced_cost(totals, job["config"])
-    totals["currency"] = job["config"].get("currency", "USD")
+    totals.update(
+        sum_costs(
+            measured,
+            job["config"],
+            complete=len(measured) == len(cases)
+            and all(case.get("status") not in {"queued", "running"} for case in cases),
+        )
+    )
     totals["demonstration"] = job["connection"].get("kind") == "mock"
     store.update_job(job["id"], metrics=totals)
     return totals
@@ -273,30 +262,30 @@ def make_fixture(namespace, scenario, business_date):
     from finbot.core.data.repositories import InvoiceRepository, VendorRepository
 
     session = SessionContext(
-        session_id=f"exp-{namespace}",
-        user_id="experiment-synthetic-user",
+        session_id=uuid4().hex,
+        user_id=uuid4().hex,
         is_temporary=False,
         namespace=namespace,
         created_at=business_date,
         expires_at=business_date + timedelta(days=1),
-        email="experiment@example.invalid",
+        email="billing@northbridge.example",
         portal_type="vendor",
     )
     with db_session() as db:
         vendors = VendorRepository(db, session)
         vendor = vendors.create_vendor(
-            company_name="Cascade Demo Vendor",
+            company_name="Northbridge Equipment",
             vendor_category="Equipment",
             industry="Production",
-            services="Equipment rental for demos",
-            contact_name="Jane Cascade",
-            email="experiment@example.invalid",
+            services="Production equipment rental",
+            contact_name="Jane Morgan",
+            email="billing@northbridge.example",
             tin="12-3456789",
             bank_account_number=FIXTURE_BANK_ACCOUNT,
-            bank_name="Demo Bank",
+            bank_name="Northbridge Bank",
             bank_routing_number="987654321",
-            bank_account_holder_name="Cascade Demo Vendor",
-            phone="555-0100",
+            bank_account_holder_name="Northbridge Equipment",
+            phone="+1-202-555-0148",
         )
         vendors.update_vendor(
             vendor.id, status="active", trust_level="standard", risk_level="low", agent_notes=""
@@ -304,7 +293,7 @@ def make_fixture(namespace, scenario, business_date):
         session.current_vendor_id = vendor.id
         source = scenario["invoice"]
         invoice = InvoiceRepository(db, session).create_invoice_for_current_vendor(
-            invoice_number=f"{source['invoice_prefix']}-EXPERIMENT",
+            invoice_number=f"{source['invoice_prefix']}-{business_date:%Y%m%d}-0001",
             amount=float(source["amount"]),
             description=source["description"],
             invoice_date=business_date,
@@ -385,10 +374,29 @@ def instrument_agents(capture, business_date, max_iterations):
             return business_date.astimezone(tz) if tz else business_date.replace(tzinfo=None)
 
     original_retry = runner.run_agent_with_retry
+    names = {
+        runner.InvoiceAgent: "invoice_agent",
+        runner.FraudComplianceAgent: "fraud_agent",
+        runner.PaymentsAgent: "payments_agent",
+        runner.CommunicationAgent: "communication_agent",
+        runner.VendorOnboardingAgent: "onboarding_agent",
+        runner.OrchestratorAgent: "orchestrator_agent",
+    }
 
-    async def no_retries(*args, **kwargs):
-        kwargs["max_retries"] = 1
-        return await original_retry(*args, **kwargs)
+    async def no_retries(agent_class, session_context, task_data, max_retries=3, workflow_id=None):
+        return await run_in_span(
+            capture,
+            names.get(agent_class, agent_class.__name__),
+            task_data,
+            lambda: original_retry(
+                agent_class=agent_class,
+                session_context=session_context,
+                task_data=task_data,
+                max_retries=1,
+                workflow_id=workflow_id,
+            ),
+            workflow_id=workflow_id,
+        )
 
     with ExitStack() as stack:
         stack.enter_context(patch.object(event_bus, "emit_agent_event", capture))
@@ -413,7 +421,7 @@ async def run_case(store, job, case, scenario):
 
     config = job["config"]
     secrets = [job["connection"].get("api_key", "")]
-    namespace = f"exp-{uuid4().hex}"
+    namespace = f"ns_{uuid4().hex}"
     stamp = config.get("business_date") or job["created_at"]
     business_date = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     if business_date.tzinfo is None:
@@ -428,18 +436,38 @@ async def run_case(store, job, case, scenario):
     }
 
     async def capture(*args, **kwargs):
-        if store.cancelled(job["id"]):
+        if kwargs.get("event_type") not in {
+            "agent_span_start",
+            "agent_span_end",
+        } and store.cancelled(job["id"]):
             raise asyncio.CancelledError()
-        event = safe_json({"at": utcnow(), "case_id": case["id"], **kwargs}, secrets)
+        event = safe_json(
+            {
+                "at": utcnow(),
+                "case_id": case["id"],
+                **kwargs,
+                **span_fields(kwargs.get("agent_name")),
+            },
+            secrets,
+        )
         events.append(event)
         store.append_event(job["id"], event)
 
     async def on_call(record):
+        metadata = record.get("metadata") or {}
+        identity = span_fields(metadata.get("agent_name"))
+        record = {**record, "metadata": {**metadata, **identity}}
         record = safe_json(record, secrets)
         calls.append(record)
         store.append_event(
             job["id"],
-            {"at": utcnow(), "case_id": case["id"], "event_type": "llm_call", "record": record},
+            {
+                "at": utcnow(),
+                "case_id": case["id"],
+                "event_type": "llm_call",
+                **identity,
+                "record": record,
+            },
         )
         if store.cancelled(job["id"]):
             raise asyncio.CancelledError()
@@ -458,16 +486,27 @@ async def run_case(store, job, case, scenario):
             try:
                 session, invoice_id = make_fixture(namespace, scenario, business_date)
                 result["initial_state"] = business_snapshot(namespace)
-                agent = CascadeOrchestratorAgent(
-                    session_context=session, workflow_id=f"experiment-{case['id']}"
-                )
+                task_data = {
+                    "invoice_id": invoice_id,
+                    "vendor_id": session.current_vendor_id,
+                    "description": "A new invoice has been submitted. Process the invoice and notify the vendor of the decision.",
+                }
+                workflow_id = f"experiment-{case['id']}"
+
+                async def invoke_root():
+                    nonlocal agent
+                    agent = CascadeOrchestratorAgent(
+                        session_context=session, workflow_id=workflow_id
+                    )
+                    return await agent.process(task_data=task_data)
+
                 result["agent_result"] = await asyncio.wait_for(
-                    agent.process(
-                        task_data={
-                            "invoice_id": invoice_id,
-                            "vendor_id": session.current_vendor_id,
-                            "description": "A new invoice has been submitted. Process the invoice and notify the vendor of the decision.",
-                        }
+                    run_in_span(
+                        capture,
+                        "orchestrator_agent",
+                        task_data,
+                        invoke_root,
+                        workflow_id=workflow_id,
                     ),
                     timeout=config.get("scenario_timeout_seconds", 600),
                 )
@@ -536,13 +575,26 @@ async def run_case(store, job, case, scenario):
             finished_at=utcnow(),
             duration_seconds=round(duration, 3),
             result=safe_json(result, secrets),
-            metrics=metrics_from_calls(calls, duration),
+            metrics=metrics_from_calls(
+                calls,
+                duration,
+                config,
+                complete=request_coverage_complete(
+                    {"metrics": {"llm_calls": len(calls)}},
+                    events,
+                    [{"record": call} for call in calls],
+                ),
+            ),
         )
     return status
 
 
-async def execute_job(store, job, case_runner=run_case):
+async def execute_job(store, job, case_runner=None):
     """Run each queued case once. Failed scenarios do not erase other results."""
+    if case_runner is None:
+        from finbot.experiments.case_process import run_case_in_process
+
+        case_runner = run_case_in_process
     scenarios, current_hash = scenario_catalog()
     stale_scenarios = job.get("scenario_hash") and job["scenario_hash"] != current_hash
     stale_code = (
@@ -566,15 +618,14 @@ async def execute_job(store, job, case_runner=run_case):
         )
         return
     catalog = {s["id"]: s for s in scenarios}
-    failures = False
-    try:
-        for case in job["cases"]:
+    failures = any(case["status"] not in {"queued", "completed"} for case in job["cases"])
+    pending = iter(case for case in job["cases"] if case["status"] == "queued")
+
+    async def consume_cases():
+        nonlocal failures
+        for case in pending:
             if store.cancelled(job["id"]):
                 raise asyncio.CancelledError()
-            # Never retry a case that was already started, even after a crash.
-            if case["status"] != "queued":
-                failures |= case["status"] != "completed"
-                continue
             try:
                 status = await case_runner(store, job, case, catalog[case["scenario_id"]])
                 failures |= status != "completed"
@@ -587,11 +638,22 @@ async def execute_job(store, job, case_runner=run_case):
                     error=type(exc).__name__,
                     finished_at=utcnow(),
                 )
+
+    concurrency = max(1, min(8, int(job["config"].get("scenario_concurrency", 1))))
+    tasks = [asyncio.create_task(consume_cases()) for _ in range(concurrency)]
+    try:
+        await asyncio.gather(*tasks)
+        if store.cancelled(job["id"]):
+            raise asyncio.CancelledError()
         summarize_job(store, job)
         store.update_job(
             job["id"], status="failed" if failures else "completed", finished_at=utcnow()
         )
     except asyncio.CancelledError:
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         status = "cancelled" if store.cancelled(job["id"]) else "interrupted"
         current = store.get_job(job["id"])
         for case in current["cases"]:
@@ -600,3 +662,8 @@ async def execute_job(store, job, case_runner=run_case):
         summarize_job(store, job)
         store.update_job(job["id"], status=status, finished_at=utcnow())
         raise
+    finally:
+        for task in tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

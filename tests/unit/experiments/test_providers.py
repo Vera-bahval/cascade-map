@@ -62,6 +62,39 @@ def configured(handler, config=None, kind="chat_completions", callback=None):
 
 
 @pytest.mark.asyncio
+async def test_each_request_logs_tariff_estimate_even_when_response_parsing_fails():
+    records = []
+    client = configured(
+        lambda _: response(
+            {},
+            {
+                "prompt_tokens": 1000,
+                "completion_tokens": 500,
+                "prompt_tokens_details": {"cached_tokens": 200},
+            },
+        ),
+        config={
+            "model": "selected",
+            "input_price": 1,
+            "output_price": 2,
+            "cached_input_price": 0.5,
+            "currency": "RUB",
+        },
+        callback=records.append,
+    )
+    try:
+        with pytest.raises(p.ProviderError):
+            await client.chat(LLMRequest(messages=[{"role": "user", "content": "Check"}]))
+    finally:
+        await client.aclose()
+    assert len(records) == 1
+    assert records[0]["success"] is False
+    assert records[0]["billing"]["cost"] == 0.0019
+    assert records[0]["billing"]["currency"] == "RUB"
+    assert records[0]["billing"]["cost_basis"] == "tariff_estimate"
+
+
+@pytest.mark.asyncio
 async def test_parallel_tool_roundtrip_canonical_history_and_usage():
     seen, records = [], []
 

@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, UTC
-from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from finbot.core.auth.middleware import get_session_context
 from finbot.core.auth.session import SessionContext
-from finbot.experiments.catalog import EXPECTATIONS, LOCAL_CATALOG, TYPES, RUBRIC_VERSION, versions
+from finbot.experiments.catalog import (
+    EXPECTATIONS, LOCAL_CATALOG, TYPES, RUBRIC_VERSION, scenario_catalog, versions,
+)
 from finbot.experiments.schemas import (
     ConnectionInput,
     ExperimentConfig,
@@ -21,9 +22,9 @@ from finbot.experiments.schemas import (
 )
 from finbot.experiments.store import Store, stamp
 from finbot.experiments.reporting import enrich_report
+from finbot.experiments.causes import CAUSE_TYPES
 
 router = APIRouter(prefix="/api/v1/experiments", tags=["experiments"])
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def get_store():
@@ -34,11 +35,21 @@ def owner(session: SessionContext):
     return json.dumps([session.namespace, session.user_id], separators=(",", ":"))
 
 
+def get_owner(
+    request: Request,
+    response: Response,
+    session: SessionContext = Depends(get_session_context),
+    store: Store = Depends(get_store),
+):
+    from finbot.experiments.workspace import workspace_owner
+
+    return workspace_owner(request, response, session, store)
+
+
 def scenarios():
-    data = json.loads((ROOT / "finbot/agents/cascade_scenarios.json").read_text())
     return [
         {**s, "expected": EXPECTATIONS.get(s["id"], "Нужна оценка по правилам сценария")}
-        for s in data["scenarios"]
+        for s in scenario_catalog()[0]
     ]
 
 
@@ -61,10 +72,7 @@ def lookup(fn, *args, **kwargs):
 
 
 @router.get("/bootstrap")
-async def bootstrap(
-    session: SessionContext = Depends(get_session_context), store: Store = Depends(get_store)
-):
-    who = owner(session)
+async def bootstrap(who: str = Depends(get_owner), store: Store = Depends(get_store)):
     return {
         "connections": store.list_connections(who),
         "configs": store.list_configs(who),
@@ -72,6 +80,7 @@ async def bootstrap(
         "worker": store.worker_status(),
         "local_catalog": LOCAL_CATALOG,
         "cascade_types": TYPES,
+        "cause_types": CAUSE_TYPES,
         "rubric_version": RUBRIC_VERSION,
     }
 
@@ -79,7 +88,7 @@ async def bootstrap(
 @router.post("/connections", status_code=201)
 async def connection(
     body: ConnectionInput,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
     from finbot.experiments.providers import validate_connection
@@ -89,18 +98,18 @@ async def connection(
         data = validate_connection(data)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return store.save_connection(owner(session), data)
+    return store.save_connection(who, data)
 
 
 @router.post("/connections/{connection_id}/discover")
 async def discover(
     connection_id: str,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
     from finbot.experiments.providers import discover_models, ProviderError
 
-    c = lookup(store.get_connection, owner(session), connection_id, secret=True)
+    c = lookup(store.get_connection, who, connection_id, secret=True)
     try:
         result = await discover_models(c)
         return result if isinstance(result, dict) else {"models": result}
@@ -111,14 +120,14 @@ async def discover(
 @router.post("/probe")
 async def probe(
     body: ProbeInput,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
     from finbot.experiments.providers import test_model, ProviderError
 
     if body.connection_id != body.config.connection_id:
         raise HTTPException(422, "Подключения проверки и конфигурации не совпадают")
-    c = lookup(store.get_connection, owner(session), body.connection_id, secret=True)
+    c = lookup(store.get_connection, who, body.connection_id, secret=True)
     try:
         return await test_model(c, validated_config(body.config))
     except (ProviderError, ValueError) as exc:
@@ -128,20 +137,19 @@ async def probe(
 @router.post("/configs", status_code=201)
 async def config(
     body: ExperimentConfig,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    return lookup(store.save_config, owner(session), validated_config(body))
+    return lookup(store.save_config, who, validated_config(body))
 
 
 @router.post("/estimate")
 async def estimate(
     body: EstimateInput,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
     cfg = validated_config(body.config)
-    who = owner(session)
     lookup(store.get_connection, who, cfg["connection_id"])
     attempts = len(cfg["scenario_ids"]) * cfg["repeats"]
     result = {
@@ -234,24 +242,31 @@ async def estimate(
 @router.post("/runs", status_code=202)
 async def launch(
     body: RunInput,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    cfg = lookup(store.get_config, owner(session), body.config_id)
+    cfg = lookup(store.get_config, who, body.config_id)
     cfg = {
         **cfg,
         "business_date": datetime.now(UTC).date().isoformat(),
         "rubric_version": RUBRIC_VERSION,
     }
+    snapshots = {s["id"]: s for s in scenarios()}
     cases = [
-        {"id": uuid.uuid4().hex, "scenario_id": sid, "repeat": repeat, "status": "queued"}
+        {
+            "id": uuid.uuid4().hex,
+            "scenario_id": sid,
+            "repeat": repeat,
+            "status": "queued",
+            "scenario_snapshot": snapshots[sid],
+        }
         for repeat in range(1, cfg["repeats"] + 1)
         for sid in cfg["scenario_ids"]
     ]
     rev, sh = versions()
     return lookup(
         store.create_job,
-        owner(session),
+        who,
         "experiment",
         cfg,
         cases,
@@ -262,49 +277,84 @@ async def launch(
 
 
 @router.get("/runs")
-async def history(
-    session: SessionContext = Depends(get_session_context), store: Store = Depends(get_store)
-):
-    return {"runs": store.list_jobs(owner(session)), "worker": store.worker_status()}
+async def history(who: str = Depends(get_owner), store: Store = Depends(get_store)):
+    from finbot.experiments.archive import configured
+    from finbot.experiments.pricing import request_cost
+    from finbot.experiments.request_reporting import billing_metrics
+
+    runs = store.list_jobs(who, include_cases=True)
+    statuses = store.result_sync_statuses()
+    for item in runs:
+        if "cost_basis" not in (item.get("metrics") or {}):
+            tariff = request_cost({}, item.get("config") or {})
+            billing = (
+                tariff if tariff["cost_basis"] == "missing_tariff"
+                else billing_metrics(item, store.billing_events(item["id"]))["run"]
+            )
+            item["metrics"] = {**(item.get("metrics") or {}), **billing}
+        item.pop("cases", None)
+        item["result_sync"] = {"enabled": configured(), **statuses.get(item["id"], {})}
+    return {"runs": runs, "worker": store.worker_status()}
 
 
 @router.get("/runs/{job_id}")
 async def run(
     job_id: str,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    job = lookup(store.get_job, job_id, owner(session))
-    return enrich_report(job, store.report_events(job_id))
+    job = lookup(store.get_job, job_id, who)
+    from finbot.experiments.archive import configured
+
+    result = enrich_report(job, store.report_events(job_id))
+    result["result_sync"] = {
+        "enabled": configured(),
+        **store.result_sync_statuses().get(job_id, {}),
+    }
+    return result
+
+
+@router.post("/runs/{job_id}/sync", status_code=202)
+async def retry_sync(
+    job_id: str,
+    who: str = Depends(get_owner),
+    store: Store = Depends(get_store),
+):
+    from finbot.experiments.archive import configured
+
+    lookup(store.get_job, job_id, who)
+    if not configured():
+        raise HTTPException(409, "Общая PostgreSQL не настроена на этом сервере.")
+    return lookup(store.request_result_sync, job_id)
 
 
 @router.post("/runs/{job_id}/cancel")
 async def cancel(
     job_id: str,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    return lookup(store.cancel, owner(session), job_id)
+    return lookup(store.cancel, who, job_id)
 
 
 @router.get("/runs/{job_id}/events")
 async def events(
     job_id: str,
     after: int = 0,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    lookup(store.get_job, job_id, owner(session))
+    lookup(store.get_job, job_id, who)
     return {"events": store.events(job_id, max(0, after))}
 
 
 @router.get("/runs/{job_id}/export")
 async def export(
     job_id: str,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    job = lookup(store.get_job, job_id, owner(session))
+    job = lookup(store.get_job, job_id, who)
     all_events = []
     after = 0
     while True:
@@ -325,16 +375,18 @@ async def assess(
     case_id: str,
     body: AssessmentInput,
     session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    job = lookup(store.get_job, job_id, owner(session))
+    job = lookup(store.get_job, job_id, who)
     case = next((c for c in job["cases"] if c["id"] == case_id), None)
     if not case:
         raise HTTPException(404, "Сценарий не найден")
     if case["status"] != "completed":
         raise HTTPException(409, "Оценка доступна для завершённого сценария")
     assessment = {
-        **body.model_dump(),
+        **(case.get("assessment") or {}),
+        **body.model_dump(exclude_unset=True, exclude_none=True),
         "label": TYPES[body.type],
         "reviewed_at": stamp(),
         "reviewer": session.user_id,
@@ -347,17 +399,17 @@ async def assess(
 @router.post("/local/pull", status_code=202)
 async def pull(
     body: PullInput,
-    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    c = lookup(store.get_connection, owner(session), body.connection_id)
+    c = lookup(store.get_connection, who, body.connection_id)
     if c["kind"] != "ollama":
         raise HTTPException(422, "Загрузка доступна только для Ollama")
     if body.model not in {m["id"] for m in LOCAL_CATALOG}:
         raise HTTPException(422, "Выберите модель из каталога загрузки")
     return lookup(
         store.create_job,
-        owner(session),
+        who,
         "model_pull",
         {"connection_id": body.connection_id, "model": body.model},
         [],

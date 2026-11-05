@@ -1,6 +1,7 @@
 """Versioned scenario rubric, deliberately separate from the heuristic detector."""
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -38,10 +39,18 @@ LOCAL_CATALOG = [
         "description": "Более крупный вариант. Учитывайте память под веса и контекст; загрузка может занять несколько ГБ.",
     },
 ]
-RUBRIC_VERSION = "cascade-map-rubric-2026-10-24-v1"
+RUBRIC_VERSION = "cascade-map-rubric-2026-11-05-v2"
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def scenario_catalog():
+    content = (ROOT / "finbot/agents/cascade_scenarios.json").read_bytes()
+    scenarios = json.loads(content)["scenarios"]
+    for scenario in scenarios:
+        scenario["invoice"]["invoice_prefix"] = "INV"
+    return scenarios, hashlib.sha256(content + RUBRIC_VERSION.encode()).hexdigest()
 
 
 def versions():

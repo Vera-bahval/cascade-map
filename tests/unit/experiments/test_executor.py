@@ -167,7 +167,7 @@ class OutcomeTests(unittest.TestCase):
         }
         prices = {"input_price": 1, "cached_input_price": 0.5, "output_price": 2}
         self.assertAlmostEqual(priced_cost(metrics, prices), 0.0019)
-        self.assertIsNone(priced_cost(metrics, {"input_price": 1, "output_price": 2}))
+        self.assertAlmostEqual(priced_cost(metrics, {"input_price": 1, "output_price": 2}), 0.002)
         metrics["usage_missing_calls"] = 1
         self.assertIsNone(priced_cost(metrics, prices))
 

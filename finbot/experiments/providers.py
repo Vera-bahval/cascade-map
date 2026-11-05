@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from finbot.core.data.models import LLMRequest, LLMResponse
+from finbot.experiments.pricing import request_cost
 
 
 class ProviderError(ValueError):
@@ -533,6 +534,7 @@ class ExperimentLLMClient:
             raise ProviderError(record["error"]) from None
         finally:
             record["duration_ms"] = round((time.monotonic() - start) * 1000, 2)
+            record["billing"] = request_cost(record["usage"], self.config)
             await _notify(self.on_call, _scrub(record, self.connection.get("api_key")))
 
 

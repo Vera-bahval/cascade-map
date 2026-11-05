@@ -137,6 +137,7 @@ def test_api_lifecycle_preserves_snapshot_and_hides_keys(client, store):
     assert run.status_code == 202, run.text
     r = run.json()
     assert r["status"] == "queued" and len(r["cases"]) == 1
+    assert r["cases"][0]["scenario_snapshot"]["invoice"]["invoice_prefix"] == "INV"
     assert client.post("/api/v1/experiments/runs", json=body).json()["id"] == r["id"]
     exp = client.get("/api/v1/experiments/runs/" + r["id"] + "/export")
     assert "never-show" not in exp.text and "credential" not in exp.text
@@ -161,6 +162,52 @@ def test_api_forbids_cross_owner_and_unbounded_pull(client, store):
         json={"connection_id": c["id"], "model": "arbitrary/remote-model"},
     )
     assert r.status_code == 422
+
+
+def test_run_billing_uses_saved_tariffs_and_sums_scenarios_without_rewriting_history(client, store):
+    conn = store.save_connection(
+        '["ns","user"]',
+        {"name": "Fixture API", "kind": "chat_completions", "base_url": "https://example.com/v1"},
+    )
+    cfg = {
+        "name": "Tariff snapshot", "connection_id": conn["id"], "model": "fixture-model",
+        "scenario_ids": ["baseline_clean", "dirty_data_negative_amount"],
+        "input_price": 2, "output_price": 5, "cached_input_price": 0.5, "currency": "RUB",
+    }
+    saved = client.post("/api/v1/experiments/configs", json=cfg)
+    assert saved.status_code == 201, saved.text
+    launched = client.post("/api/v1/experiments/runs", json={"config_id": saved.json()["id"]})
+    assert launched.status_code == 202, launched.text
+    run = launched.json()
+    usages = [
+        {"input_tokens": 1000, "output_tokens": 100, "cached_input_tokens": None},
+        {"input_tokens": 2000, "output_tokens": 200, "cached_input_tokens": 1000},
+    ]
+    for case, usage in zip(run["cases"], usages):
+        store.append_event(run["id"], {
+            "event_type": "llm_call", "case_id": case["id"], "agent_name": "invoice_agent",
+            "record": {"success": True, "usage": usage, "response": {"model": "fixture-model"}},
+        })
+        store.update_case(run["id"], case["id"], status="completed", metrics={"llm_calls": 1})
+    store.update_job(run["id"], status="completed", metrics={"llm_calls": 2})
+    before = store.get_job(run["id"])
+    assert client.post("/api/v1/experiments/configs", json={**cfg, "input_price": 200}).status_code == 201
+    detail = client.get("/api/v1/experiments/runs/" + run["id"])
+    assert detail.status_code == 200, detail.text
+    result = detail.json()
+    assert [c["metrics"]["cost"] for c in result["cases"]] == pytest.approx([0.0025, 0.0035])
+    assert result["metrics"]["cost"] == pytest.approx(0.006)
+    assert result["metrics"]["currency"] == "RUB"
+    assert result["metrics"]["cost_basis"] == "tariff_estimate_no_cache_discount"
+    assert result["config"]["input_price"] == 2
+    history = client.get("/api/v1/experiments/runs").json()["runs"]
+    summary = next(item for item in history if item["id"] == run["id"])
+    assert summary["metrics"]["cost"] == result["metrics"]["cost"]
+    assert summary["metrics"]["cost_basis"] == result["metrics"]["cost_basis"]
+    assert "cases" not in summary
+    exported = client.get("/api/v1/experiments/runs/" + run["id"] + "/export").json()["run"]
+    assert exported["metrics"]["cost"] == result["metrics"]["cost"]
+    assert store.get_job(run["id"]) == before
 
 
 def test_report_and_export_explain_saved_cases_without_mutating_them(client, store):
@@ -208,3 +255,36 @@ def test_report_and_export_explain_saved_cases_without_mutating_them(client, sto
     assert report == exported["run"]["cases"][0]["report"]
     assert "secret-never-export" not in response.text
     assert store.get_job(own["id"]) == before
+
+
+def test_manual_cause_edit_preserves_old_clients_and_exports(client, store):
+    own = job(store, '["ns","user"]')
+    case_id = own["cases"][0]["id"]
+    store.update_case(own["id"], case_id, status="completed")
+    url = f"/api/v1/experiments/runs/{own['id']}/cases/{case_id}/assessment"
+    response = client.patch(
+        url,
+        json={
+            "type": "full_cascade",
+            "reason": "Evidence from the trace",
+            "cause_codes": ["unverified_claim"],
+        },
+    )
+    assert response.status_code == 200
+    response = client.patch(
+        url, json={"type": "half_cascade", "reason": "Updated evidence from trace"}
+    )
+    assert response.json()["cause_codes"] == ["unverified_claim"]
+    exported = client.get(f"/api/v1/experiments/runs/{own['id']}/export").json()
+    assert exported["run"]["cases"][0]["assessment"]["cause_codes"] == ["unverified_claim"]
+    assert (
+        client.patch(
+            url,
+            json={
+                "type": "half_cascade",
+                "reason": "Explicit clearing of cause",
+                "cause_codes": [],
+            },
+        ).json()["cause_codes"]
+        == []
+    )

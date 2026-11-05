@@ -70,3 +70,6 @@ asyncio_mode = "strict"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["finbot*"]
+
+[tool.setuptools.package-data]
+"finbot.experiments" = ["sql/*.sql"]

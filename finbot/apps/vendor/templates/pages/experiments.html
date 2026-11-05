@@ -27,11 +27,29 @@
       </aside>
       <section class="exp-card exp-config-card"><div class="exp-section-title"><h3>Конфигурация эксперимента</h3><span class="exp-eyebrow">02</span></div>
         <label>Сохранённые конфигурации<select id="exp-saved"><option value="">Новая конфигурация</option></select></label>
+        <div class="exp-actions"><button type="button" id="exp-import-config" class="exp-button exp-secondary">Загрузить JSON</button><button type="button" id="exp-export-config" class="exp-button exp-secondary">Скачать настройки</button><input id="exp-config-file" type="file" accept=".json,application/json" hidden></div>
+        <p class="exp-help">Сохранённые настройки доступны после перезапуска. JSON позволяет перенести конфигурацию; подключение и ключ выбираются отдельно.</p>
         <form id="exp-config-form" class="exp-form">
           <div class="exp-grid2"><label>Название<input name="name" required maxlength="120" placeholder="Qwen · низкая температура"></label><label>Подключение<select name="connection_id" id="exp-config-connection" required></select></label></div>
           <label>Модель<div class="exp-inline"><input name="model" id="exp-model" list="exp-models" required placeholder="Выберите из каталога или введите ID"><datalist id="exp-models"></datalist><button id="exp-discover" class="exp-button exp-secondary" type="button">Получить модели</button></div></label><p id="exp-model-status" class="exp-help">Каталог не гарантирует доступ к генерации и поддержке инструментов.</p>
           <div class="exp-preset-row"><span>Заполнить:</span><button type="button" data-preset="default">По умолчанию у провайдера</button><button type="button" data-preset="low">Низкая температура</button></div>
-          <div class="exp-grid2"><label>Температура<input name="temperature" type="number" min="0" max="2" step="0.05" placeholder="По умолчанию"></label><label>Повторов сценария<input name="repeats" type="number" min="1" max="20" step="1" value="1" required></label></div>
+          <div class="exp-grid3"><label>Температура<input name="temperature" type="number" min="0" max="2" step="0.05" placeholder="По умолчанию"></label><label>Повторов сценария<input name="repeats" type="number" min="1" max="20" step="1" value="1" required></label><label>Сценариев одновременно<input name="scenario_concurrency" type="number" min="1" max="8" step="1" value="2" required aria-describedby="exp-concurrency-help"></label></div>
+          <p class="exp-help" id="exp-concurrency-help">Лимит для одного прогона. Разные модели запускаются параллельно в пределах свободных мест; агенты внутри сценария работают по порядку.</p>
+          <p class="exp-help" id="exp-worker-capacity" role="status" aria-live="polite">Проверяем свободные места исполнителя…</p>
+          <fieldset class="exp-pricing"><legend>Стоимость запросов</legend>
+            <p class="exp-help" id="exp-pricing-help">Тариф модели в рублях за 1 млн токенов. Поля необязательные: без тарифа стоимость будет неизвестна.</p>
+            <input name="currency" type="hidden" value="RUB">
+            <div class="exp-price-grid">
+              <label>Вход<input name="input_price" type="number" min="0" max="1000000" step="any" placeholder="Не указан" aria-describedby="exp-pricing-help"></label>
+              <label>Выход<input name="output_price" type="number" min="0" max="1000000" step="any" placeholder="Не указан" aria-describedby="exp-pricing-help"></label>
+              <label>Кэшированный вход<input name="cached_input_price" type="number" min="0" max="1000000" step="any" placeholder="Не указан" aria-describedby="exp-cache-price-help"></label>
+            </div>
+            <p class="exp-help" id="exp-cache-price-help">Если нет данных о кэше или его тарифа, весь вход считаем по обычной цене — это оценка без скидки за кэш.</p>
+            <details><summary>Источник и дата тарифа</summary><div class="exp-grid2">
+              <label>Источник тарифа<input name="price_source" value="Введено пользователем" required maxlength="300" placeholder="Ссылка или название провайдера"></label>
+              <label>Дата проверки тарифа<input name="price_checked_at" type="date"></label>
+            </div></details>
+          </fieldset>
           <details><summary>Параметры генерации и исполнения</summary><p class="exp-help">Пустое поле использует настройки провайдера. Поддержка зависит от конкретной модели; подтвердите её тестом. Меняйте один фактор в сравниваемой паре.</p><div class="exp-grid3">
             <label>top_p<input name="top_p" type="number" min="0.001" max="1" step="0.01" placeholder="По умолчанию"></label>
             <label>top_k<input name="top_k" type="number" min="0" max="1000" step="1" placeholder="Локальный сервер"></label>
@@ -48,9 +66,9 @@
       </section>
     </div>
   </section>
-  <section id="exp-view-history" class="exp-view" hidden><div class="exp-section-title"><div><h3>История прогонов</h3><p class="exp-help">Выберите запуски для сравнения или откройте решения по сценариям.</p></div><button class="exp-button exp-secondary" type="button" id="exp-refresh">Обновить</button></div><div id="exp-history" class="exp-stack"></div></section>
+  <section id="exp-view-history" class="exp-view" hidden><div class="exp-section-title"><div><h3>История прогонов</h3><p class="exp-help">Выберите запуски для сравнения или откройте решения по сценариям.</p><p class="exp-help" id="exp-history-capacity"></p></div><div class="exp-actions"><button class="exp-button exp-secondary" type="button" id="exp-add-run">Добавить другую модель</button><button class="exp-button exp-secondary" type="button" id="exp-refresh">Обновить</button></div></div><div id="exp-history" class="exp-stack"></div></section>
   <section id="exp-view-compare" class="exp-view" hidden><div class="exp-section-title"><div><h3>Бенчмарки</h3><p class="exp-help">Выберите минимум два прогона в истории. Сравнение описывает сохранённые запуски, а не статистическую значимость.</p></div></div><div id="exp-comparison"></div></section>
   <dialog id="exp-detail" class="exp-dialog"><div class="exp-section-title"><div><span class="exp-eyebrow">RUN DETAILS</span><h3 id="exp-detail-title">Прогон</h3></div><button type="button" id="exp-close-detail" class="exp-button exp-secondary" aria-label="Закрыть детали">Закрыть ×</button></div><div id="exp-detail-content"></div></dialog>
 </div>
 {% endblock %}
-{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/experiments.js') }}" defer></script>{% endblock %}
+{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/experiments.js') }}?v={{ workbench_script_version }}" defer></script>{% endblock %}

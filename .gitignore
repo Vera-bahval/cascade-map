@@ -83,3 +83,4 @@ SECURITY_BUGS_REPORT.md
 # Private experiment history and encryption key
 /data/experiments.db*
 /data/experiments.db.key
+/certs/
