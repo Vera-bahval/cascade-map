@@ -1,0 +1,61 @@
+{% extends 'base.html' %}
+{% block title %}Аналитика · CascadeMap{% endblock %}
+{% block nav_analytics %}active{% endblock %}
+{% block page_title %}Аналитика{% endblock %}
+{% block page_subtitle %}От сохранённых трасс к проверяемым выводам{% endblock %}
+{% block header_actions %}{% endblock %}
+{% block ctf_tools %}{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/vendor/experiments.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', path='css/vendor/analytics.css') }}?v={{ analytics_version }}">
+{% endblock %}
+{% block content %}
+<div class="experiments analytics" lang="ru">
+  <div class="exp-hero"><div><span class="exp-eyebrow">CASCADEMAP / ANALYTICS</span><h2>Карта ошибок и уверенности</h2><p>Выберите данные, сравните слои оценки и проверьте, из каких наблюдений получен каждый результат.</p></div><a class="exp-button exp-secondary" href="/vendor/experiments">К прогонам →</a></div>
+  <div id="an-message" class="exp-message" role="status" aria-live="polite">Загружаем каталог данных…</div>
+  <form id="an-filter" class="exp-card exp-form an-filters">
+    <div class="exp-section-title"><h3>Выборка</h3><button type="button" id="an-reload" class="exp-button exp-secondary">Обновить каталог</button></div>
+    <div class="exp-grid3">
+      <label>Источник<select id="an-source"><option value="archive">Общий PostgreSQL</option><option value="local">Моё локальное пространство</option></select></label>
+      <label>Начало периода<input id="an-start" type="datetime-local"></label>
+      <label>Конец периода, не включая<input id="an-end" type="datetime-local"></label>
+    </div>
+    <p id="an-scope" class="exp-help"></p>
+    <div class="exp-grid3">
+      <label>Модели<select id="an-models" multiple size="4"></select></label>
+      <label>Прогоны<select id="an-runs" multiple size="4"></select></label>
+      <label>Серии<select id="an-series" multiple size="4"></select></label>
+    </div>
+    <p class="exp-help">Пустой выбор означает все значения. Для нескольких значений используйте Ctrl / Cmd. Фильтры пересекаются. Даты вводятся в часовом поясе браузера.</p>
+    <details><summary>Сценарии, роли и все параметры</summary>
+      <div class="exp-grid2"><label>Сценарии<select id="an-scenarios" multiple size="7"></select></label><label>Роли агентов<select id="an-agents" multiple size="5"></select></label></div>
+      <p class="exp-help">Роли ограничивают профили уверенности и признаки агентов; знаменатели метрик сценария остаются на уровне сценария.</p>
+      <div class="exp-grid2"><label>Точное совпадение config · JSON<textarea id="an-config" rows="4" spellcheck="false" placeholder='{"temperature": 0.7, "top_p": 0.9}'>{}</textarea></label><label>Версии и metadata · JSON<textarea id="an-metadata" rows="4" spellcheck="false" placeholder='{"code_revision": "…", "scenario_hash": "…"}'>{}</textarea></label></div>
+      <p class="exp-help">Доступны все сохранённые ключи, включая seed, thinking, лимиты и evaluation_policy. Полные настройки каждого прогона показаны ниже.</p>
+      <label class="exp-checkbox"><input id="an-demo" type="checkbox">Показывать demo в покрытии и таблицах (из научных метрик исключены)</label>
+    </details>
+    <div class="exp-grid3">
+      <label>Матрица<select id="an-matrix"><option value="detector">Тип каскада: детектор ↔ ручная оценка</option><option value="vanilla">Vanilla confidence ↔ судья</option><option value="lexical">Lexical confidence ↔ судья</option><option value="judge">Judge confidence ↔ судья</option></select></label>
+      <label>Порог уверенности<input id="an-threshold" type="number" min="0" max="1" step="0.05" value="0.5" required></label>
+      <label>Слой меток для частот<select id="an-labels"><option value="human">Ручные метки</option><option value="detector">Автоматический детектор</option></select></label>
+    </div>
+    <div class="exp-grid3"><label>Число повторов k<input id="an-k" type="number" min="1" max="100" value="5" required></label><label>Интервалы калибровки<input id="an-bins" type="number" min="2" max="30" value="10" required></label><label>Нормализация матрицы<select id="an-normalize"><option value="count">Количество</option><option value="row">По строкам · % эталона</option><option value="all">От всей матрицы · %</option></select></label></div>
+    <div class="exp-actions"><button class="exp-button exp-primary" id="an-apply" type="submit">Построить аналитику</button><button class="exp-button exp-secondary" id="an-reset" type="reset">Сбросить фильтры</button><button class="exp-button exp-secondary" id="an-export" type="button" disabled>Скачать отчёт JSON</button></div>
+  </form>
+  <div id="an-results" hidden>
+    <section class="exp-card"><h3>Покрытие данных</h3><div id="an-coverage" class="an-stats"></div><p id="an-statuses" class="exp-help"></p></section>
+    <section class="exp-card"><div class="exp-section-title"><h3>Матрица ошибок</h3><span id="an-matrix-size" class="exp-pill"></span></div><p id="an-matrix-help" class="exp-help"></p><div id="an-heatmap" class="an-scroll"></div><div id="an-scores" class="an-stats"></div><details><summary>Метрики по классам и моделям</summary><div id="an-class-scores" class="an-scroll"></div><div id="an-model-matrices"></div></details></section>
+    <section class="exp-card"><h3>Карта «модель × тип детектора»</h3><p class="exp-help">Частоты автоматических типов на завершённых сценариях. Это карта наблюдений, а не confusion matrix: эталонная разметка не требуется. Каждая ячейка показывает количество и долю внутри модели.</p><div id="an-type-map" class="an-scroll"></div></section>
+    <section class="exp-card"><h3>Базовые метрики и частоты</h3><p class="exp-help">P_casc — half / midchain / full среди размеченных триггерных сценариев. Технические сбои и неизвестные метки не становятся отрицательными примерами. Интервалы долей — Wilson 95%.</p><div id="an-baseline" class="an-stats"></div><div id="an-groups" class="an-scroll"></div><details><summary>Температура и seed</summary><div id="an-dimensions" class="an-scroll"></div></details></section>
+    <section class="exp-card"><h3>Уверенность: vanilla / lexical / внешний судья</h3><p class="exp-help">Δconf = c₁ − cₖ внутри одного исполнения агента. Отрицательное значение — рост уверенности. Пустые и неполные профили исключаются. Калибровка измеряет согласие с error_present судьи; независимого эталона здесь нет.</p><div id="an-confidence" class="an-scroll"></div><details><summary>Профили по итерациям</summary><div id="an-profiles" class="an-scroll"></div></details></section>
+    <section class="exp-card"><h3>Старые метрики цепочки · отдельно от итерационных</h3><p class="exp-help">Heuristic confidence сохранена по исполнению агента. Legacy degradation = c₁ − ∏cᵢ по цепочке разных агентов; это другая величина, чем Δconf выше. model_confidence — только фактически сохранённая самооценка модели.</p><div id="an-legacy" class="an-stats"></div><div id="an-agent-stats" class="an-scroll"></div></section>
+    <section class="exp-card"><h3>Признаки для новых гипотез</h3><div id="an-features" class="an-stats"></div><p class="exp-help">Отклонение маршрута: пропуск fraud перед payments, перестановка или повтор роли. Без надёжного порядка метрика неизвестна; ранняя безопасная остановка сама по себе не считается отклонением. Claim assertion и carry-over — эвристические признаки; они не доказывают принятие ошибки.</p><details><summary>Признаки каждого сценария и операционные метрики</summary><div id="an-case-features" class="an-scroll"></div><pre id="an-operational"></pre></details></section>
+    <section class="exp-card"><h3>Необязательный LLM-разбор</h3><p class="exp-help">Один дополнительный запрос к настроенной модели оценщика. Оплачивается отдельно. Передаются агрегаты текущего отчёта. Вывод модели требует проверки.</p><button id="an-interpret" type="button" class="exp-button exp-secondary">Проанализировать агрегаты · платный запрос</button><pre id="an-interpretation" aria-live="polite"></pre></section>
+    <section class="exp-card"><h3>Методика и ограничения</h3><ul id="an-limitations" class="an-limitations"></ul></section>
+  </div>
+  <section class="exp-card"><h3>Таблицы и полнота архива</h3><p class="exp-help">Счётчики каталога относятся ко всему выбранному источнику. Просмотр строк учитывает применённые фильтры запусков, периода, моделей и сценариев. Фильтр ролей и настройки матрицы строки таблиц не ограничивают. Каталог конфигураций серий показан целиком, поскольку прямая связь с прогоном в схеме отсутствует.</p><div id="an-inventory" class="an-scroll"></div><div class="exp-grid2"><label>Таблица<select id="an-table"></select></label><div class="exp-actions"><button type="button" id="an-prev" class="exp-button exp-secondary">← Назад</button><button type="button" id="an-next" class="exp-button exp-secondary">Далее →</button></div></div><p id="an-page" class="exp-help"></p><div id="an-rows" class="an-scroll"></div></section>
+  <label class="exp-checkbox"><input id="an-all-rows" type="checkbox">Просматривать все строки таблицы без фильтров (в пределах выбранного источника)</label>
+  <details class="exp-card"><summary>Сохранённые конфигурации запусков</summary><div id="an-run-configs" class="an-scroll"></div></details>
+</div>
+{% endblock %}
+{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/analytics.js') }}?v={{ analytics_version }}" defer></script>{% endblock %}

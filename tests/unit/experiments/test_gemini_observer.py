@@ -12,6 +12,49 @@ ENDPOINT = (
 )
 
 
+@pytest.mark.asyncio
+async def test_analytics_schema_does_not_force_iteration_judgment(monkeypatch):
+    schema = {
+        "type": "OBJECT",
+        "required": ["analysis"],
+        "properties": {"analysis": {"type": "STRING"}},
+    }
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["generationConfig"]["responseSchema"] == schema
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [
+                    {
+                        "finishReason": "STOP",
+                        "content": {"parts": [{"text": '{"analysis":"Coverage is incomplete"}'}]},
+                    }
+                ]
+            },
+        )
+
+    async def target(url, connection):
+        return url, {}, {}
+
+    monkeypatch.setattr("finbot.experiments.gemini_observer._target", target)
+    client = GeminiObserverClient(
+        {"base_url": ENDPOINT, "api_key": "fixture"},
+        {"model": "gemini-flash-latest"},
+        response_schema=schema,
+    )
+    await client.http.aclose()
+    client.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        response = await client.chat(
+            LLMRequest(messages=[{"role": "user", "content": "Aggregates"}])
+        )
+        assert json.loads(response.content)["analysis"] == "Coverage is incomplete"
+    finally:
+        await client.aclose()
+
+
 async def client_with_transport(monkeypatch, handler):
     async def target(url, connection):
         assert not connection["api_key"]

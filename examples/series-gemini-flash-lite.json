@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "Gemini Flash Lite · температуры 0 / 0.7 / 1 · 3 повтора",
+  "defaults": {
+    "repeats": 3,
+    "scenario_concurrency": 1,
+    "scenario_ids": [
+      "baseline_clean",
+      "dirty_data_negative_amount",
+      "prompt_injection_authority",
+      "confidence_degradation",
+      "multiple_red_flags",
+      "full_cascade_plausible",
+      "midchain_approval_misjudge"
+    ],
+    "top_p": 0.95,
+    "max_output_tokens": 5000,
+    "max_iterations": 10,
+    "timeout_seconds": 120,
+    "scenario_timeout_seconds": 1800,
+    "evaluate_iterations": true
+  },
+  "matrix": {
+    "temperature": [
+      0.0,
+      0.7,
+      1.0
+    ]
+  },
+  "models": [
+    {
+      "connection_id": "YOUR_GEMINI_CONNECTION_ID",
+      "model": "gemini-flash-lite-latest"
+    }
+  ]
+}

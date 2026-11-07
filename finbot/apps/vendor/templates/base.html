@@ -131,6 +131,10 @@
                         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 20V10m7 10V4m7 16v-7M3 20h18"/></svg>
                         <span class="sidebar-collapsible-text">Эксперименты</span>
                     </a>
+                    <a href="/vendor/analytics" class="vendor-nav-item {% block nav_analytics %}{% endblock %}" data-section="analytics" data-tooltip="Аналитика">
+                        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v18h18M7 14l4-4 4 3 5-8"/></svg>
+                        <span class="sidebar-collapsible-text">Аналитика</span>
+                    </a>
                     <a href="/vendor/cascade" class="vendor-nav-item {% block nav_cascade %}{% endblock %}" data-section="cascade" data-tooltip="Cascade Lab">
                         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
@@ -307,10 +311,12 @@
     </div>
 
     <!-- CTF Footer -->
+    {% block ctf_tools %}
     <div class="relative z-10">{% include 'components/ctf_footer.html' %}</div>
 
     <!-- CTF Sidecar Panel -->
     {% include 'components/ctf_sidecar.html' %}
+    {% endblock %}
 
     <!-- CTF Context -->
     <script>

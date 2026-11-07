@@ -20,9 +20,7 @@ router = APIRouter(tags=["vendor-web"])
 
 
 @router.get("/", response_class=HTMLResponse, name="vendor_home")
-async def vendor_home(
-    _: Request, session_context: SessionContext = Depends(get_session_context)
-):
+async def vendor_home(_: Request, session_context: SessionContext = Depends(get_session_context)):
     """Vendor portal home with vendor context routing"""
     with db_session() as db:
         vendor_repo = VendorRepository(db, session_context)
@@ -242,6 +240,23 @@ async def vendor_experiments(
         {
             "request": request,
             "workbench_script_version": hashlib.sha256(script.read_bytes()).hexdigest()[:12],
+            "vendor_context": session_context.current_vendor,
+            "is_multi_vendor": session_context.is_multi_vendor_user(),
+        },
+    )
+
+
+@router.get("/analytics", response_class=HTMLResponse, name="vendor_analytics")
+async def vendor_analytics(
+    request: Request, session_context: SessionContext = Depends(get_session_context)
+):
+    script = Path(__file__).resolve().parents[3] / "static/js/vendor/analytics.js"
+    return template_response(
+        request,
+        "pages/analytics.html",
+        {
+            "request": request,
+            "analytics_version": hashlib.sha256(script.read_bytes()).hexdigest()[:12],
             "vendor_context": session_context.current_vendor,
             "is_multi_vendor": session_context.is_multi_vendor_user(),
         },

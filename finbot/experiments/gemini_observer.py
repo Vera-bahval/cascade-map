@@ -27,13 +27,14 @@ def usage(data):
 
 
 class GeminiObserverClient:
-    def __init__(self, connection, config, on_call=None):
+    def __init__(self, connection, config, on_call=None, response_schema=None):
         self.connection = dict(connection)
         self.endpoint = validate_base_url(connection["base_url"])
         self.config = dict(config)
         if not urlsplit(self.endpoint).path.endswith(f'/models/{config["model"]}:generateContent'):
             raise ProviderError("Gemini observer model must match its generateContent endpoint")
         self.on_call = on_call
+        self.response_schema = response_schema
         self.http = httpx.AsyncClient(
             timeout=config.get("timeout_seconds", 120),
             follow_redirects=False,
@@ -59,6 +60,8 @@ class GeminiObserverClient:
                 },
             },
         }
+        if self.response_schema is not None:
+            generation["responseSchema"] = self.response_schema
         if self.config.get("temperature") is not None:
             generation["temperature"] = self.config["temperature"]
         messages = request.messages or []
