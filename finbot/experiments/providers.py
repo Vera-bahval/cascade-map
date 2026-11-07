@@ -496,6 +496,7 @@ class ExperimentLLMClient:
                     metadata={"mock": True, "usage": _usage({})},
                 )
                 record["success"] = True
+                record["observation"] = {"content": result.content, "tool_calls": result.tool_calls}
                 return result
             suffix, payload = self._payload(request)
             record["request"] = payload
@@ -515,6 +516,7 @@ class ExperimentLLMClient:
             record["response"] = data
             record["usage"] = _usage(data, self.kind == "ollama")
             result = self._parse(data, copy.deepcopy(request.messages or []))
+            record["observation"] = {"content": result.content, "tool_calls": result.tool_calls}
             record["success"] = True
             return result
         except asyncio.CancelledError:

@@ -491,6 +491,7 @@ def iter_sqlite_exports(path):
     """Read only existing experiment records; never open or decrypt saved credentials."""
     path = Path(path).expanduser().resolve()
     connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
     try:
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
@@ -503,6 +504,10 @@ def iter_sqlite_exports(path):
                 continue
             job.pop("owner", None)
             job["connection"] = {"kind": (job.get("connection") or {}).get("kind")}
+            if job.get("series_id"):
+                from finbot.experiments.store import Store
+
+                job["series_snapshot"] = Store._series(connection, job["series_id"])
             events = []
             for seq, raw in connection.execute(
                 "SELECT seq,data FROM events WHERE job_id=? ORDER BY seq", (row[0],)

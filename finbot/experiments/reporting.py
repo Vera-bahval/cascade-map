@@ -7,8 +7,8 @@ import json
 import re
 from collections import defaultdict, deque
 
-from finbot.experiments.catalog import TYPES
 from finbot.experiments.cascade_evidence import analyze_error_evidence
+from finbot.experiments.catalog import TYPES
 
 DETECTOR_VERSION = "cascade-evidence-2026-11-05-v4"
 
@@ -694,9 +694,13 @@ def enrich_report(job, events):
         case_events = grouped[case.get("id")]
         calls = request_events(case_events)
         requests = [request_summary(event, config) for event in calls]
+        from finbot.experiments.observations import case_observations
+
         cases.append(
             {
                 **case,
+                "observations": case.get("observations")
+                or case_observations(case.get("result") or {}, case_events),
                 "metrics": {**(case.get("metrics") or {}), **billing["cases"][case.get("id")]},
                 "report": case_report(case, case_events, demo),
                 "requests": requests,

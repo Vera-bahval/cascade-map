@@ -1,22 +1,24 @@
 """SQLite queue with immutable job snapshots and encrypted credentials."""
 
 from __future__ import annotations
-import json
+
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+
 from cryptography.fernet import Fernet
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
 
 def stamp():
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     return datetime.now(UTC).isoformat()
 
@@ -71,6 +73,17 @@ class Store:
                 job_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
                 lease_id TEXT, lease_until REAL, last_error TEXT, synced_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS series_configs (
+                id TEXT PRIMARY KEY, owner TEXT NOT NULL, data TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS series (
+                id TEXT PRIMARY KEY, owner TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+                data TEXT NOT NULL, UNIQUE(owner, idempotency_key)
+            );
+            CREATE TABLE IF NOT EXISTS evaluations (
+                job_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
+                lease_id TEXT, lease_until REAL, error TEXT
             );
             """)
         os.chmod(self.path, 0o600)
@@ -165,6 +178,207 @@ class Store:
             db.execute("INSERT INTO configs VALUES (?,?,?)", (item["id"], owner, json.dumps(item)))
         return item
 
+    def save_series_config(self, owner, manifest):
+        item = {"id": str(uuid.uuid4()), "created_at": stamp(), "manifest": manifest}
+        with self.db() as db:
+            db.execute(
+                "INSERT INTO series_configs VALUES (?,?,?)", (item["id"], owner, json.dumps(item))
+            )
+            self._queue_result_sync(db, item["id"])
+        return item
+
+    def archive_entity(self, ident):
+        with self.db() as db:
+            row = db.execute("SELECT data FROM series_configs WHERE id=?", (ident,)).fetchone()
+            if row:
+                return "series_config", json.loads(row[0])
+            if db.execute("SELECT 1 FROM series WHERE id=?", (ident,)).fetchone():
+                return "series", self._series(db, ident)
+        return "run", self.get_job(ident)
+
+    def series_configs(self, owner):
+        with self.db() as db:
+            return [
+                json.loads(r[0])
+                for r in db.execute(
+                    "SELECT data FROM series_configs WHERE owner=? ORDER BY rowid DESC", (owner,)
+                )
+            ]
+
+    def get_series_config(self, owner, ident):
+        with self.db() as db:
+            row = db.execute(
+                "SELECT data FROM series_configs WHERE id=? AND owner=?", (ident, owner)
+            ).fetchone()
+        if row is None:
+            raise KeyError("Конфигурация серии не найдена")
+        return json.loads(row[0])
+
+    def create_series(self, owner, manifest, plan, snapshots, *, key, revision, scenario_hash):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT id FROM series WHERE owner=? AND idempotency_key=?", (owner, key)
+            ).fetchone()
+            if previous:
+                return self._series(db, previous[0], owner)
+            ident = str(uuid.uuid4())
+            item = {
+                "id": ident,
+                "name": manifest["name"],
+                "created_at": stamp(),
+                "manifest": manifest,
+                "code_revision": revision,
+                "scenario_hash": scenario_hash,
+                "run_ids": [],
+                "attempt_count": plan["attempt_count"],
+            }
+            for cfg in plan["runs"]:
+                config = {**cfg, "business_date": item["created_at"][:10]}
+                cases = [
+                    {
+                        "id": uuid.uuid4().hex,
+                        "scenario_id": sid,
+                        "repeat": repeat,
+                        "status": "queued",
+                        "scenario_snapshot": snapshots[sid],
+                    }
+                    for repeat in range(1, cfg["repeats"] + 1)
+                    for sid in cfg["scenario_ids"]
+                ]
+                job = self.create_job(
+                    owner,
+                    "experiment",
+                    config,
+                    cases,
+                    code_revision=revision,
+                    scenario_hash=scenario_hash,
+                    series_id=ident,
+                    _db=db,
+                )
+                item["run_ids"].append(job["id"])
+            db.execute("INSERT INTO series VALUES (?,?,?,?)", (ident, owner, key, json.dumps(item)))
+            self._queue_result_sync(db, ident)
+            return self._series(db, ident, owner)
+
+    @staticmethod
+    def _series(db, ident, owner=None):
+        row = db.execute("SELECT owner,data FROM series WHERE id=?", (ident,)).fetchone()
+        if row is None or owner is not None and owner != row[0]:
+            raise KeyError("Серия не найдена")
+        item = json.loads(row[1])
+        jobs = [
+            json.loads(r[0])
+            for r in db.execute(
+                "SELECT data FROM jobs WHERE json_extract(data,'$.series_id')=? ORDER BY rowid",
+                (ident,),
+            )
+        ]
+        starts = [j["started_at"] for j in jobs if j.get("started_at")]
+        ends = [
+            j.get("finished_at") or j.get("updated_at") for j in jobs if j["status"] in TERMINAL
+        ]
+        done = bool(jobs) and all(j["status"] in TERMINAL for j in jobs)
+        item.update(
+            updated_at=max(
+                [item["created_at"], *[j.get("updated_at", item["created_at"]) for j in jobs]]
+            ),
+            started_at=min(starts) if starts else None,
+            finished_at=max(ends) if done and ends else None,
+            status=(
+                (
+                    "completed"
+                    if all(j["status"] == "completed" for j in jobs)
+                    else "finished_with_errors"
+                )
+                if done
+                else "running" if starts else "queued"
+            ),
+            runs=[
+                {
+                    "id": j["id"],
+                    "config": j["config"],
+                    "status": j["status"],
+                    "created_at": j.get("created_at"),
+                    "started_at": j.get("started_at"),
+                    "finished_at": j.get("finished_at"),
+                }
+                for j in jobs
+            ],
+        )
+        return item
+
+    def get_series(self, ident, owner=None):
+        with self.db() as db:
+            return self._series(db, ident, owner)
+
+    def list_series(self, owner):
+        with self.db() as db:
+            ids = [
+                r[0]
+                for r in db.execute(
+                    "SELECT id FROM series WHERE owner=? ORDER BY rowid DESC LIMIT 100", (owner,)
+                )
+            ]
+            return [self._series(db, ident, owner) for ident in ids]
+
+    def claim_evaluation(self):
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            # Interrupted paid requests are not replayed automatically.
+            db.execute(
+                "UPDATE evaluations SET status='interrupted',error='Evaluator stopped; explicit retry required' WHERE status='running' AND lease_until<?",
+                (time.time(),),
+            )
+            row = db.execute(
+                "SELECT job_id FROM evaluations WHERE status='pending' ORDER BY rowid LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            token = uuid.uuid4().hex
+            db.execute(
+                "UPDATE evaluations SET status='running',lease_id=?,lease_until=? WHERE job_id=?",
+                (token, time.time() + 120, row[0]),
+            )
+            return {"job_id": row[0], "lease_id": token}
+
+    def heartbeat_evaluation(self, delivery):
+        with self.db() as db:
+            db.execute(
+                "UPDATE evaluations SET lease_until=? WHERE job_id=? AND lease_id=? AND status='running'",
+                (time.time() + 120, delivery["job_id"], delivery["lease_id"]),
+            )
+
+    def finish_evaluation(self, delivery, error=None):
+        with self.db() as db:
+            db.execute(
+                "UPDATE evaluations SET status=?,error=?,lease_id=NULL,lease_until=NULL WHERE job_id=? AND lease_id=?",
+                (
+                    "error" if error else "completed",
+                    error,
+                    delivery["job_id"],
+                    delivery["lease_id"],
+                ),
+            )
+
+    def evaluation_status(self, job_id):
+        with self.db() as db:
+            row = db.execute(
+                "SELECT status,error FROM evaluations WHERE job_id=?", (job_id,)
+            ).fetchone()
+        return dict(row) if row else {"status": "not_requested"}
+
+    def retry_evaluation(self, owner, job_id):
+        job = self.get_job(job_id, owner)
+        if not self._can_sync(job) or not job["config"].get("evaluate_iterations"):
+            raise ValueError("Оценщик не включён для этого завершённого прогона")
+        with self.db() as db:
+            db.execute(
+                "UPDATE evaluations SET status='pending',error=NULL WHERE job_id=? AND status IN ('error','interrupted')",
+                (job_id,),
+            )
+        return self.evaluation_status(job_id)
+
     def get_config(self, owner, ident):
         with self.db() as db:
             row = db.execute(
@@ -191,9 +405,12 @@ class Store:
         code_revision="unknown",
         scenario_hash="",
         idempotency_key=None,
+        series_id=None,
+        _db=None,
     ):
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.db() if _db is None else nullcontext(_db) as db:
+            if _db is None:
+                db.execute("BEGIN IMMEDIATE")
             if idempotency_key:
                 existing = db.execute(
                     "SELECT data FROM jobs WHERE owner=? AND idempotency_key=?",
@@ -213,6 +430,7 @@ class Store:
                     (owner,),
                 ).fetchone()[0]
                 >= 20
+                and series_id is None
             ):
                 raise ValueError("В очереди уже 20 заданий")
             job = {
@@ -230,6 +448,12 @@ class Store:
                 "cancel_requested": False,
                 "metrics": {},
             }
+            if series_id:
+                job["series_id"] = series_id
+            if config.get("evaluate_iterations"):
+                from finbot.experiments.evaluation import judge_policy
+
+                job["evaluation_policy"] = judge_policy()
             db.execute(
                 "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
                 (job["id"], owner, "queued", None, idempotency_key, time.time(), json.dumps(job)),
@@ -279,6 +503,10 @@ class Store:
         )
         if self._can_sync(job):
             self._queue_result_sync(db, job["id"])
+        if job.get("series_id"):
+            self._queue_result_sync(db, job["series_id"])
+        if self._can_sync(job) and job["config"].get("evaluate_iterations"):
+            db.execute("INSERT OR IGNORE INTO evaluations(job_id) VALUES (?)", (job["id"],))
 
     @staticmethod
     def _can_sync(job):
@@ -372,6 +600,8 @@ class Store:
             "config",
             "code_revision",
             "scenario_hash",
+            "series_id",
+            "evaluation_policy",
         } & fields.keys()
         if forbidden:
             raise ValueError("Снимок конфигурации неизменяем")
@@ -444,15 +674,17 @@ class Store:
         result = []
         for row in rows:
             usage = json.loads(row["usage"]) if isinstance(row["usage"], str) else {}
-            result.append({
-                "seq": row["seq"],
-                "case_id": row["case_id"],
-                "event_type": row["event_type"],
-                "record": {
-                    "usage": usage if isinstance(usage, dict) else {},
-                    "metadata": {"interaction_id": row["interaction_id"]},
-                },
-            })
+            result.append(
+                {
+                    "seq": row["seq"],
+                    "case_id": row["case_id"],
+                    "event_type": row["event_type"],
+                    "record": {
+                        "usage": usage if isinstance(usage, dict) else {},
+                        "metadata": {"interaction_id": row["interaction_id"]},
+                    },
+                }
+            )
         return result
 
     def claim_job(self, worker_id, max_running=None):

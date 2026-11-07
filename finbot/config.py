@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     FINBOT_RESULTS_PG_USER: str = ""
     FINBOT_RESULTS_PG_PASSWORD: str = ""
     FINBOT_RESULTS_PG_SSLROOTCERT: str = ""
+    # Fixed observer, invoked only for runs that explicitly request evaluation.
+    FINBOT_JUDGE_MODEL: str = ""
+    FINBOT_JUDGE_BASE_URL: str = ""
+    FINBOT_JUDGE_API_KEY: str = ""
+    FINBOT_JUDGE_KIND: Literal["chat_completions", "responses", "ollama", "gemini"] = (
+        "chat_completions"
+    )
+    FINBOT_JUDGE_ALLOW_PRIVATE_NETWORK: bool = False
+    FINBOT_JUDGE_USE_ENV_PROXY: bool = False
+    FINBOT_JUDGE_TEMPERATURE: float | None = Field(default=None, ge=0, le=2)
 
     # Postgres Config
     POSTGRES_HOST: str = "localhost"

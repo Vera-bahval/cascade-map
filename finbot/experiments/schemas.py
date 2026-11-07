@@ -1,6 +1,7 @@
 """Experiment input schemas."""
 
 from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -34,6 +35,7 @@ class ExperimentConfig(InputModel):
     repeats: int = Field(default=1, ge=1, le=20)
     scenario_concurrency: int = Field(default=2, ge=1, le=8, strict=True)
     scenario_ids: list[str] = Field(default_factory=list, max_length=7)
+    evaluate_iterations: bool = False
     input_price: float | None = Field(default=None, ge=0, le=1000000)
     output_price: float | None = Field(default=None, ge=0, le=1000000)
     cached_input_price: float | None = Field(default=None, ge=0, le=1000000)

@@ -7,10 +7,11 @@ import signal
 import time
 from uuid import uuid4
 
-from finbot.experiments.executor import execute_job, safe_json, utcnow
+from finbot.experiments.archive import configured as archive_configured
+from finbot.experiments.archive import sync_once
 from finbot.experiments.catalog import versions
+from finbot.experiments.executor import execute_job, safe_json, utcnow
 from finbot.experiments.store import Store
-from finbot.experiments.archive import configured as archive_configured, sync_once
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,18 @@ async def run_worker(
 
     maintenance = asyncio.create_task(maintain())
     archive = asyncio.create_task(archive_results())
+
+    async def evaluate_results():
+        from finbot.experiments.evaluation import evaluate_once
+
+        while not stop.is_set():
+            try:
+                await evaluate_once(store)
+            except Exception as exc:
+                logger.warning("Observer failed: %s", type(exc).__name__)
+            await wait_or_stop(poll_seconds)
+
+    evaluator = asyncio.create_task(evaluate_results())
     try:
         while not stop.is_set():
             for ident, task in list(active.items()):
@@ -187,6 +200,8 @@ async def run_worker(
                 task.cancel()
         await asyncio.gather(*active.values(), return_exceptions=True)
         maintenance.cancel()
+        evaluator.cancel()
+        await asyncio.gather(evaluator, return_exceptions=True)
         await asyncio.gather(maintenance, return_exceptions=True)
         # Let an in-flight archive transaction finish before another sync begins.
         await asyncio.gather(archive, return_exceptions=True)

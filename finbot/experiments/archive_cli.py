@@ -14,6 +14,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="Create shared PostgreSQL tables and views")
+    check = commands.add_parser("check", help="Check archive connection, TLS and schema")
+    check.add_argument(
+        "--write-probe",
+        action="store_true",
+        help="Verify a linked test write and always roll it back",
+    )
     load = commands.add_parser("import", help="Import existing SQLite or legacy JSON results")
     load.add_argument("--sqlite", type=Path, action="append", default=[])
     load.add_argument("--legacy-dir", type=Path, action="append", default=[])
@@ -24,10 +30,16 @@ def main():
     analysis.add_argument("--case-id", type=UUID, action="append", default=[])
     args = parser.parse_args()
     try:
+        if args.command == "check":
+            from finbot.experiments.archive_health import check_archive
+
+            result = check_archive(PostgresArchive(), write_probe=args.write_probe)
+            print(json.dumps(result))
+            return 0 if result["ok"] else 1
         if args.command == "init":
             PostgresArchive().initialize()
             print(
-                "Created cm_runs, cm_cases, cm_agent_runs, cm_llm_calls, cm_events and two result views."
+                "Initialized result archive, series, agent iterations, separate evaluations and result views."
             )
             return 0
         if args.command == "reanalyze":

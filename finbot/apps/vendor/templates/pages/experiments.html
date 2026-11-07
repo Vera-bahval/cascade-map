@@ -9,7 +9,7 @@
 <div class="experiments" lang="ru">
   <div class="exp-hero"><div><span class="exp-eyebrow">CASCADEMAP / RESEARCH WORKSPACE</span><h2>Эксперименты с моделями</h2><p>Сравнивайте модели в одной среде. Каждый запуск сохраняет настройки, события агентов и фактический исход.</p></div><div class="exp-hero-mark" aria-hidden="true">01 <span>→</span> 07</div></div>
   <div id="exp-message" class="exp-message" role="status" aria-live="polite" hidden></div>
-  <nav class="exp-tabs" aria-label="Разделы экспериментов"><button type="button" data-view="setup" aria-current="page">01 · Настройка</button><button type="button" data-view="history">02 · Прогоны <span id="exp-run-count">0</span></button><button type="button" data-view="compare">03 · Сравнение <span id="exp-compare-count">0</span></button></nav>
+  <nav class="exp-tabs" aria-label="Разделы экспериментов"><button type="button" data-view="setup" aria-current="page">01 · Настройка</button><button type="button" data-view="series">02 · Серии</button><button type="button" data-view="history">03 · Прогоны <span id="exp-run-count">0</span></button><button type="button" data-view="compare">04 · Сравнение <span id="exp-compare-count">0</span></button></nav>
   <section id="exp-view-setup" class="exp-view">
     <div class="exp-layout">
       <aside class="exp-stack">
@@ -60,11 +60,26 @@
             <label>Лимит шагов агента<input name="max_iterations" type="number" min="1" max="30" value="10" required></label><label>Лимит сценария, сек.<input name="scenario_timeout_seconds" type="number" min="30" max="7200" value="1800" required></label>
             <label>Таймаут запроса, сек.<input name="timeout_seconds" type="number" min="10" max="600" value="120" required></label>
           </div><p id="exp-capabilities" class="exp-help"></p></details>
+          <label class="exp-checkbox"><input type="checkbox" name="evaluate_iterations" id="exp-evaluate-iterations">Оценить итерации постоянной моделью после прогона</label>
+          <p id="exp-judge-help" class="exp-help">Оценщик делает дополнительные запросы, оплачиваемые отдельно. Его ответы не передаются исследуемым агентам.</p>
           <fieldset><legend>Сценарии <span id="exp-scenario-count"></span></legend><div id="exp-scenarios" class="exp-scenarios"></div></fieldset>
           <div class="exp-actions"><button type="button" id="exp-probe" class="exp-button exp-secondary">Тест модели · платный запрос</button><button type="submit" class="exp-button exp-secondary">Сохранить конфигурацию</button><button type="button" id="exp-launch" class="exp-button exp-primary">Запустить эксперимент →</button></div><p class="exp-help">Запуск использует выбранное подключение и может расходовать средства API. Задача продолжится после закрытия вкладки; исполнитель должен оставаться запущенным.</p>
         </form>
       </section>
     </div>
+  </section>
+  <section id="exp-view-series" class="exp-view" hidden>
+    <section class="exp-card exp-stack exp-form">
+      <h3>Серия экспериментов</h3>
+      <p class="exp-help">Общие настройки применяются ко всем моделям. Диапазоны перебираются во всех сочетаниях; overrides и matrix конкретной модели заменяют общие значения. Каждый seed повторяется repeats раз для каждого сценария. Проверка плана не вызывает модели.</p>
+      <label>Сохранённая конфигурация серии<select id="exp-series-saved"><option value="">Новая конфигурация</option></select></label>
+      <div class="exp-actions"><button id="exp-series-example" type="button" class="exp-button exp-secondary">Создать из текущей модели</button><button id="exp-series-add-model" type="button" class="exp-button exp-secondary">Добавить текущую модель</button><button id="exp-series-import" type="button" class="exp-button exp-secondary">Загрузить JSON</button><button id="exp-series-download" type="button" class="exp-button exp-secondary">Скачать конфигурацию</button><input id="exp-series-file" type="file" accept=".json,application/json" hidden></div>
+      <label>Конфигурация JSON<textarea id="exp-series-manifest" rows="20" spellcheck="false" aria-describedby="exp-series-help"></textarea></label>
+      <p id="exp-series-help" class="exp-help">В matrix укажите список значений или {"start": 0, "stop": 1, "step": 0.1}. Для seed и top_k нужны целые числа. null в списке или overrides оставляет параметр провайдеру. Поддержка параметров зависит от модели и API.</p>
+      <div class="exp-actions"><button id="exp-series-preview" type="button" class="exp-button exp-secondary">Проверить план</button><button id="exp-series-save" type="button" class="exp-button exp-secondary">Сохранить конфигурацию</button><button id="exp-series-launch" type="button" class="exp-button exp-primary">Запустить серию</button></div>
+      <div id="exp-series-plan" role="status" aria-live="polite"></div>
+    </section>
+    <h3>Сохранённые серии</h3><div id="exp-series-history" class="exp-stack"></div>
   </section>
   <section id="exp-view-history" class="exp-view" hidden><div class="exp-section-title"><div><h3>История прогонов</h3><p class="exp-help">Выберите запуски для сравнения или откройте решения по сценариям.</p><p class="exp-help" id="exp-history-capacity"></p></div><div class="exp-actions"><button class="exp-button exp-secondary" type="button" id="exp-add-run">Добавить другую модель</button><button class="exp-button exp-secondary" type="button" id="exp-refresh">Обновить</button></div></div><div id="exp-history" class="exp-stack"></div></section>
   <section id="exp-view-compare" class="exp-view" hidden><div class="exp-section-title"><div><h3>Бенчмарки</h3><p class="exp-help">Выберите минимум два прогона в истории. Сравнение описывает сохранённые запуски, а не статистическую значимость.</p></div></div><div id="exp-comparison"></div></section>

@@ -15,9 +15,9 @@ from statistics import median
 from unittest.mock import patch
 from uuid import uuid4
 
-
-from finbot.experiments.catalog import EXPECTATIONS as EXPECTED, scenario_catalog, versions
 from finbot.experiments.agent_spans import run_in_span, span_fields
+from finbot.experiments.catalog import EXPECTATIONS as EXPECTED
+from finbot.experiments.catalog import scenario_catalog, versions
 from finbot.experiments.pricing import calls_cost, request_cost, sum_costs
 from finbot.experiments.request_reporting import request_coverage_complete
 
@@ -229,8 +229,9 @@ def isolated_business_database():
     """Bind every repository to an empty SQLite database; restore even on cancel."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    from finbot.core.data import database
+
     from finbot.core.auth import session
+    from finbot.core.data import database
 
     # Register all tables referenced by built-in tools before create_all.
     for name in (
@@ -305,8 +306,8 @@ def make_fixture(namespace, scenario, business_date):
 def business_snapshot(namespace):
     from finbot.core.data.database import db_session
     from finbot.core.data.models import Invoice, MCPActivityLog, Vendor
-    from finbot.mcp.servers.finstripe.models import PaymentTransaction
     from finbot.mcp.servers.finmail.models import Email
+    from finbot.mcp.servers.finstripe.models import PaymentTransaction
 
     def rows(db, model, fields, **filters):
         return [
@@ -416,8 +417,8 @@ def instrument_agents(capture, business_date, max_iterations):
 
 async def run_case(store, job, case, scenario):
     from finbot.agents.cascade import CascadeOrchestratorAgent
-    from finbot.experiments.providers import ExperimentLLMClient
     from finbot.core.llm.client import use_llm_client
+    from finbot.experiments.providers import ExperimentLLMClient
 
     config = job["config"]
     secrets = [job["connection"].get("api_key", "")]
@@ -436,6 +437,10 @@ async def run_case(store, job, case, scenario):
     }
 
     async def capture(*args, **kwargs):
+        if kwargs.get("event_type") == "iteration_start":
+            from finbot.experiments.agent_spans import begin_iteration
+
+            begin_iteration((kwargs.get("event_data") or {}).get("iteration"))
         if kwargs.get("event_type") not in {
             "agent_span_start",
             "agent_span_end",
@@ -459,16 +464,15 @@ async def run_case(store, job, case, scenario):
         record = {**record, "metadata": {**metadata, **identity}}
         record = safe_json(record, secrets)
         calls.append(record)
-        store.append_event(
-            job["id"],
-            {
-                "at": utcnow(),
-                "case_id": case["id"],
-                "event_type": "llm_call",
-                **identity,
-                "record": record,
-            },
-        )
+        event = {
+            "at": utcnow(),
+            "case_id": case["id"],
+            "event_type": "llm_call",
+            **identity,
+            "record": record,
+        }
+        events.append(event)
+        store.append_event(job["id"], event)
         if store.cancelled(job["id"]):
             raise asyncio.CancelledError()
 
@@ -568,6 +572,9 @@ async def run_case(store, job, case, scenario):
                 ],
             }
         duration = time.monotonic() - started
+        from finbot.experiments.observations import case_observations
+
+        observations = case_observations(result, events)
         store.update_case(
             job["id"],
             case["id"],
@@ -575,6 +582,7 @@ async def run_case(store, job, case, scenario):
             finished_at=utcnow(),
             duration_seconds=round(duration, 3),
             result=safe_json(result, secrets),
+            observations=safe_json(observations, secrets),
             metrics=metrics_from_calls(
                 calls,
                 duration,

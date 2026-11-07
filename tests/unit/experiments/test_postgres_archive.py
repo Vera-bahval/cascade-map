@@ -7,8 +7,8 @@ from contextlib import closing
 from uuid import uuid4
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
 import pytest
+from psycopg2.extras import RealDictCursor
 
 from finbot.experiments.archive import PostgresArchive
 from finbot.experiments.archive_import import iter_legacy_exports
@@ -39,16 +39,158 @@ def initialized_archive():
 @pytest.fixture
 def archive(initialized_archive):
     with closing(initialized_archive.connect()) as conn, conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE public.cm_runs CASCADE")
+        cur.execute("TRUNCATE public.cm_runs, public.cm_series, public.cm_series_configs CASCADE")
     yield initialized_archive
     with closing(initialized_archive.connect()) as conn, conn, conn.cursor() as cur:
-        cur.execute("TRUNCATE public.cm_runs CASCADE")
+        cur.execute("TRUNCATE public.cm_runs, public.cm_series, public.cm_series_configs CASCADE")
 
 
 def query(archive, statement, values=()):
     with closing(archive.connect()) as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(statement, values)
         return list(cur.fetchall())
+
+
+def test_archive_health_probe_verifies_linked_writes_without_leaving_rows(archive):
+    from finbot.experiments.archive_health import check_archive
+
+    result = check_archive(archive, write_probe=True)
+    assert result["ok"]
+    assert result["write_probe"] == {"verified": True, "rolled_back": True}
+    for table in (
+        "cm_runs",
+        "cm_series",
+        "cm_series_configs",
+        "cm_cases",
+        "cm_agent_iterations",
+        "cm_iteration_evaluations",
+    ):
+        assert query(archive, f"SELECT count(*) AS n FROM public.{table}")[0]["n"] == 0
+
+
+def test_series_outbox_archives_configuration_before_execution_and_links_completed_run(
+    archive, tmp_path
+):
+    from finbot.experiments.archive import sync_once
+    from finbot.experiments.store import Store
+
+    store = Store(tmp_path / "outbox.db")
+    connection = store.save_connection("owner", {"name": "offline", "kind": "chat_completions"})
+    manifest = {
+        "name": "Outbox series",
+        "models": [{"connection_id": connection["id"], "model": "unit-model"}],
+    }
+    store.save_series_config("owner", manifest)
+    config = {
+        "connection_id": connection["id"],
+        "model": "unit-model",
+        "scenario_ids": ["baseline_clean"],
+        "repeats": 1,
+    }
+    series = store.create_series(
+        "owner",
+        manifest,
+        {"runs": [config], "attempt_count": 1},
+        {"baseline_clean": {}},
+        key="outbox-series",
+        revision="test",
+        scenario_hash="test",
+    )
+    while sync_once(store, archive):
+        pass
+    assert query(archive, "SELECT count(*) AS n FROM public.cm_series_configs")[0]["n"] == 1
+    assert query(archive, "SELECT status,started_at FROM public.cm_series")[0] == {
+        "status": "queued",
+        "started_at": None,
+    }
+    assert query(archive, "SELECT count(*) AS n FROM public.cm_runs")[0]["n"] == 0
+    job = store.claim_job("worker")
+    case = job["cases"][0]
+    store.update_case(
+        job["id"], case["id"], status="completed", metrics={"llm_calls": 0}, result={}
+    )
+    store.update_job(job["id"], status="completed", finished_at=at(8))
+    while sync_once(store, archive):
+        pass
+    assert all(state["status"] == "synced" for state in store.result_sync_statuses().values())
+    row = query(
+        archive,
+        "SELECT s.id, r.status FROM public.cm_series s JOIN public.cm_series_runs l ON l.series_id=s.id JOIN public.cm_runs r ON r.id=l.run_id",
+    )[0]
+    assert str(row["id"]) == series["id"] and row["status"] == "completed"
+    assert query(archive, "SELECT count(*) AS n FROM public.cm_case_observations")[0]["n"] == 1
+
+
+def test_series_iterations_and_separate_judgments_survive_resync_and_schema_upgrade(archive):
+    series_id = str(uuid4())
+    manifest = {
+        "name": "PG series",
+        "models": [{"model": "unit-model"}],
+        "matrix": {"temperature": [0, 1]},
+    }
+    archive.save_series_config({"id": str(uuid4()), "created_at": at(0), "manifest": manifest})
+    archive.save_series(
+        {
+            "id": series_id,
+            "name": "PG series",
+            "created_at": at(0),
+            "started_at": at(1),
+            "finished_at": at(8),
+            "status": "completed",
+            "manifest": manifest,
+            "runs": [{"config": {"temperature": 0.7}}],
+            "code_revision": "test",
+            "scenario_hash": "test",
+        }
+    )
+    job, events = source()
+    job["series_id"] = series_id
+    job["cases"][0]["observations"] = {
+        "vanilla": {"confidence_degradation": 0.12},
+        "iterations": [
+            {
+                "source_agent_run_id": "invoice",
+                "agent_name": "invoice_agent",
+                "iteration_index": 1,
+                "status": "completed",
+                "started_at": at(1),
+                "finished_at": at(2),
+                "vanilla_confidence": 0.8,
+                "lexical_confidence": {"value": 1, "method": "negation-aware-summary-v1"},
+                "calls": [],
+                "tool_events": [],
+                "judge": {
+                    "status": "completed",
+                    "confidence": 0.7,
+                    "error_present": None,
+                    "method": "evidence-confidence-v1",
+                    "reason": "Evidence",
+                },
+            }
+        ],
+    }
+    payload = build_archive(job, events)
+    archive.save(payload)
+    archive.save(payload)
+    archive.initialize()
+    assert len(query(archive, "SELECT * FROM public.cm_agent_iterations")) == 1
+    row = query(archive, "SELECT * FROM public.cm_agent_iterations")[0]
+    assert row["iteration_index"] == 1 and row["agent_run_id"] is not None
+    assert row["vanilla_confidence"] == 0.8
+    assert row["lexical_confidence"]["value"] == 1
+    judgment = query(archive, "SELECT * FROM public.cm_iteration_evaluations")[0]
+    assert judgment["confidence"] == 0.7 and judgment["error_present"] is None
+    assert (
+        str(query(archive, "SELECT series_id FROM public.cm_series_runs")[0]["series_id"])
+        == series_id
+    )
+    assert (
+        query(archive, "SELECT observations FROM public.cm_case_observations")[0]["observations"][
+            "vanilla"
+        ]["confidence_degradation"]
+        == 0.12
+    )
+    assert query(archive, "SELECT manifest FROM public.cm_series")[0]["manifest"] == manifest
 
 
 def test_request_cost_view_joins_frozen_config_and_unknown_cost_stays_null(archive):

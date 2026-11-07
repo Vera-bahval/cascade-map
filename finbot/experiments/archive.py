@@ -1,9 +1,9 @@
 """Shared result archive; execution and credentials remain in the local store."""
 
-from contextlib import closing
-from datetime import datetime, UTC
 import hashlib
 import json
+from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg2
@@ -24,6 +24,10 @@ JSON_COLUMNS = {
     "agents": {"result", "input", "metrics", "provenance"},
     "calls": {"effective_params", "request", "response", "error", "provenance"},
     "events": {"payload"},
+    "iterations": {"trace", "lexical_confidence"},
+    "evaluations": {"assessment"},
+    "case_observations": {"observations"},
+    "series_runs": set(),
 }
 TABLES = {
     "run": "cm_runs",
@@ -31,6 +35,10 @@ TABLES = {
     "agents": "cm_agent_runs",
     "calls": "cm_llm_calls",
     "events": "cm_events",
+    "iterations": "cm_agent_iterations",
+    "evaluations": "cm_iteration_evaluations",
+    "case_observations": "cm_case_observations",
+    "series_runs": "cm_series_runs",
 }
 
 
@@ -88,10 +96,28 @@ class PostgresArchive:
         )
 
     def initialize(self):
-        source = Path(__file__).with_name("sql") / "results_v1.sql"
+        directory = Path(__file__).with_name("sql")
         with closing(self.connect()) as conn, conn, conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(70644312)")
-            cur.execute(source.read_text())
+            cur.execute(
+                "SELECT c.relname, pg_get_userbyid(c.relowner)=current_user FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname=ANY(%s)",
+                (["cm_runs", "cm_cases", "cm_agent_runs", "cm_llm_calls", "cm_events"],),
+            )
+            existing = cur.fetchall()
+            if not existing or all(row[1] for row in existing):
+                cur.execute((directory / "results_v1.sql").read_text())
+            else:
+                # A shared writer may have DML/REFERENCES without owning the base
+                # schema. Do not ALTER another developer's tables or views.
+                if len(existing) != 5:
+                    raise ValueError("Base archive migration must be applied by its owner")
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='cm_llm_calls' AND column_name=ANY(%s)",
+                    (["cost", "currency", "cost_basis"],),
+                )
+                if len(cur.fetchall()) != 3:
+                    raise ValueError("Base billing migration must be applied by its owner")
+            cur.execute((directory / "results_v2.sql").read_text())
 
     def _insert(self, cur, kind, rows):
         if not rows:
@@ -120,6 +146,8 @@ class PostgresArchive:
         execute_values(cur, statement.as_string(cur), values, page_size=25)
 
     def save(self, bundle):
+        if bundle.get("series"):
+            self.save_series(bundle["series"])
         run = dict(bundle["run"])
         run["source_updated_at"] = timestamp(run["metadata"].get("source_updated_at"))
         lock = int.from_bytes(hashlib.sha256(run["id"].encode()).digest()[:8], "big", signed=True)
@@ -149,11 +177,64 @@ class PostgresArchive:
             self._insert(cur, "run", [run])
             for kind in ("cases", "agents", "calls", "events"):
                 self._insert(cur, kind, bundle[kind])
+            for kind in ("series_runs", "case_observations", "iterations", "evaluations"):
+                self._insert(cur, kind, bundle.get(kind, []))
         return {
             "status": "synced",
             "id": run["id"],
             **{k: len(bundle[k]) for k in ("cases", "agents", "calls", "events")},
         }
+
+    def save_series_config(self, item):
+        from finbot.experiments.archive_projection import sanitize
+
+        with closing(self.connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO public.cm_series_configs(id,name,created_at,manifest)
+                VALUES (%s,%s,%s,%s) ON CONFLICT(id) DO NOTHING""",
+                (
+                    item["id"],
+                    item["manifest"]["name"],
+                    timestamp(item["created_at"]),
+                    Json(sanitize(item["manifest"])),
+                ),
+            )
+
+    def save_series(self, item):
+        from finbot.experiments.archive_projection import sanitize
+
+        with closing(self.connect()) as conn, conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO public.cm_series
+                (id,name,created_at,started_at,finished_at,status,manifest,plan,metadata,source_updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT(id) DO UPDATE SET started_at=EXCLUDED.started_at,
+                finished_at=EXCLUDED.finished_at,status=EXCLUDED.status,plan=EXCLUDED.plan,
+                source_updated_at=EXCLUDED.source_updated_at,archived_at=now()
+                WHERE cm_series.source_updated_at IS NULL OR cm_series.source_updated_at<=EXCLUDED.source_updated_at""",
+                (
+                    item["id"],
+                    item["name"],
+                    timestamp(item["created_at"]),
+                    timestamp(item.get("started_at")),
+                    timestamp(item.get("finished_at")),
+                    item["status"],
+                    Json(sanitize(item["manifest"])),
+                    Json(sanitize(item["runs"])),
+                    Json(
+                        {
+                            "code_revision": item["code_revision"],
+                            "scenario_hash": item["scenario_hash"],
+                        }
+                    ),
+                    timestamp(
+                        item.get("updated_at")
+                        or item.get("finished_at")
+                        or item.get("started_at")
+                        or item["created_at"]
+                    ),
+                ),
+            )
 
 
 def sync_once(store, archive=None):
@@ -166,7 +247,18 @@ def sync_once(store, archive=None):
         from finbot.experiments.archive_projection import build_archive
 
         archive = archive or PostgresArchive()
-        job = store.get_job(delivery["job_id"])
+        kind, item = store.archive_entity(delivery["job_id"])
+        if kind == "series_config":
+            archive.save_series_config(item)
+            store.finish_result_sync(delivery)
+            return True
+        if kind == "series":
+            archive.save_series(item)
+            store.finish_result_sync(delivery)
+            return True
+        job = item
+        if job.get("series_id"):
+            archive.save_series(store.get_series(job["series_id"]))
         events, after = [], 0
         while batch := store.events(job["id"], after=after, limit=500):
             events.extend(batch)

@@ -1,28 +1,37 @@
 """Session-scoped experiment API."""
 
 from __future__ import annotations
+
 import json
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+
 from finbot.core.auth.middleware import get_session_context
 from finbot.core.auth.session import SessionContext
 from finbot.experiments.catalog import (
-    EXPECTATIONS, LOCAL_CATALOG, TYPES, RUBRIC_VERSION, scenario_catalog, versions,
+    EXPECTATIONS,
+    LOCAL_CATALOG,
+    RUBRIC_VERSION,
+    TYPES,
+    scenario_catalog,
+    versions,
 )
+from finbot.experiments.causes import CAUSE_TYPES
+from finbot.experiments.reporting import enrich_report
 from finbot.experiments.schemas import (
+    AssessmentInput,
     ConnectionInput,
+    EstimateInput,
     ExperimentConfig,
     ProbeInput,
-    EstimateInput,
-    RunInput,
     PullInput,
-    AssessmentInput,
+    RunInput,
 )
+from finbot.experiments.series import SeriesLaunch, SeriesManifest, expand_manifest
 from finbot.experiments.store import Store, stamp
-from finbot.experiments.reporting import enrich_report
-from finbot.experiments.causes import CAUSE_TYPES
 
 router = APIRouter(prefix="/api/v1/experiments", tags=["experiments"])
 
@@ -59,6 +68,11 @@ def validated_config(config: ExperimentConfig):
     data["scenario_ids"] = data["scenario_ids"] or [s["id"] for s in scenarios()]
     if not set(data["scenario_ids"]) <= available:
         raise HTTPException(422, "Неизвестный сценарий")
+    if data.get("evaluate_iterations"):
+        from finbot.experiments.evaluation import judge_policy
+
+        if judge_policy() is None:
+            raise HTTPException(422, "Постоянный оценщик не настроен на сервере")
     return data
 
 
@@ -73,6 +87,8 @@ def lookup(fn, *args, **kwargs):
 
 @router.get("/bootstrap")
 async def bootstrap(who: str = Depends(get_owner), store: Store = Depends(get_store)):
+    from finbot.experiments.evaluation import judge_policy
+
     return {
         "connections": store.list_connections(who),
         "configs": store.list_configs(who),
@@ -82,7 +98,104 @@ async def bootstrap(who: str = Depends(get_owner), store: Store = Depends(get_st
         "cascade_types": TYPES,
         "cause_types": CAUSE_TYPES,
         "rubric_version": RUBRIC_VERSION,
+        "series_configs": store.series_configs(who),
+        "judge_available": judge_policy() is not None,
     }
+
+
+def series_plan(body, who, store):
+    kinds = {
+        target.connection_id: lookup(store.get_connection, who, target.connection_id)["kind"]
+        for target in body.models
+    }
+    plan = lookup(expand_manifest, body, [s["id"] for s in scenarios()], kinds)
+    if any(cfg.get("evaluate_iterations") for cfg in plan["runs"]):
+        from finbot.experiments.evaluation import judge_policy
+
+        if judge_policy() is None:
+            raise HTTPException(422, "Постоянный оценщик не настроен на сервере")
+    return plan
+
+
+@router.post("/series/preview")
+async def preview_series(
+    body: SeriesManifest, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    return series_plan(body, who, store)
+
+
+@router.post("/series/configs", status_code=201)
+async def save_series_config(
+    body: SeriesManifest, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    series_plan(body, who, store)
+    return store.save_series_config(who, body.model_dump(mode="json"))
+
+
+@router.post("/series", status_code=202)
+async def launch_series(
+    body: SeriesLaunch, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    saved = lookup(store.get_series_config, who, body.config_id)
+    manifest = SeriesManifest.model_validate(saved["manifest"])
+    plan = series_plan(manifest, who, store)
+    for cfg in plan["runs"]:
+        cfg["rubric_version"] = RUBRIC_VERSION
+    revision, scenario_hash = versions()
+    return lookup(
+        store.create_series,
+        who,
+        saved["manifest"],
+        plan,
+        {s["id"]: s for s in scenarios()},
+        key=body.idempotency_key,
+        revision=revision,
+        scenario_hash=scenario_hash,
+    )
+
+
+@router.get("/series")
+async def series_history(who: str = Depends(get_owner), store: Store = Depends(get_store)):
+    from finbot.experiments.archive import configured
+
+    states = store.result_sync_statuses()
+    return {
+        "series": [
+            {**s, "result_sync": {"enabled": configured(), **states.get(s["id"], {})}}
+            for s in store.list_series(who)
+        ]
+    }
+
+
+@router.get("/series/{series_id}/export")
+async def export_series(
+    series_id: str, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    item = lookup(store.get_series, series_id, who)
+    lines = [{"kind": "series", **{k: v for k, v in item.items() if k != "runs"}}]
+    lines.extend({"kind": "run", **run} for run in item["runs"])
+    return PlainTextResponse(
+        "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n",
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="series-{series_id}.jsonl"'},
+    )
+
+
+@router.post("/series/{series_id}/cancel")
+async def cancel_series(
+    series_id: str, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    item = lookup(store.get_series, series_id, who)
+    for run in item["runs"]:
+        store.cancel(who, run["id"])
+    return store.get_series(series_id, who)
+
+
+@router.post("/runs/{job_id}/evaluation", status_code=202)
+async def retry_evaluation(
+    job_id: str, who: str = Depends(get_owner), store: Store = Depends(get_store)
+):
+    return lookup(store.retry_evaluation, who, job_id)
 
 
 @router.post("/connections", status_code=201)
@@ -107,7 +220,7 @@ async def discover(
     who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    from finbot.experiments.providers import discover_models, ProviderError
+    from finbot.experiments.providers import ProviderError, discover_models
 
     c = lookup(store.get_connection, who, connection_id, secret=True)
     try:
@@ -123,7 +236,7 @@ async def probe(
     who: str = Depends(get_owner),
     store: Store = Depends(get_store),
 ):
-    from finbot.experiments.providers import test_model, ProviderError
+    from finbot.experiments.providers import ProviderError, test_model
 
     if body.connection_id != body.config.connection_id:
         raise HTTPException(422, "Подключения проверки и конфигурации не совпадают")
@@ -288,7 +401,8 @@ async def history(who: str = Depends(get_owner), store: Store = Depends(get_stor
         if "cost_basis" not in (item.get("metrics") or {}):
             tariff = request_cost({}, item.get("config") or {})
             billing = (
-                tariff if tariff["cost_basis"] == "missing_tariff"
+                tariff
+                if tariff["cost_basis"] == "missing_tariff"
                 else billing_metrics(item, store.billing_events(item["id"]))["run"]
             )
             item["metrics"] = {**(item.get("metrics") or {}), **billing}
@@ -307,6 +421,7 @@ async def run(
     from finbot.experiments.archive import configured
 
     result = enrich_report(job, store.report_events(job_id))
+    result["evaluation"] = store.evaluation_status(job_id)
     result["result_sync"] = {
         "enabled": configured(),
         **store.result_sync_statuses().get(job_id, {}),

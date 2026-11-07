@@ -11,8 +11,8 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 from finbot.experiments.catalog import EXPECTATIONS
-from finbot.experiments.reporting import case_report
 from finbot.experiments.pricing import request_cost, sum_costs
+from finbot.experiments.reporting import case_report
 from finbot.experiments.request_reporting import request_coverage_complete, request_events
 
 SECRET_KEYS = {
@@ -538,6 +538,7 @@ def build_archive(
         (job.get("metrics") or {}).get("demonstration")
     )
     result = {
+        "series": job.get("series_snapshot"),
         "run": {
             "id": run_id,
             "source_kind": source_kind,
@@ -558,6 +559,8 @@ def build_archive(
                 "code_revision": job.get("code_revision"),
                 "scenario_hash": job.get("scenario_hash"),
                 "execution": job.get("execution") or {},
+                "series_id": job.get("series_id"),
+                "evaluation_policy": job.get("evaluation_policy"),
                 "source": _source_metadata(sanitize(source_metadata or {}, secrets)),
             },
         },
@@ -565,6 +568,12 @@ def build_archive(
         "agents": [],
         "calls": [],
         "events": [],
+        "iterations": [],
+        "evaluations": [],
+        "case_observations": [],
+        "series_runs": (
+            [{"run_id": run_id, "series_id": job["series_id"]}] if job.get("series_id") else []
+        ),
     }
     grouped = defaultdict(list)
     for event in events:
@@ -590,6 +599,9 @@ def build_archive(
                 and not agent["provenance"].get("ambiguous_boundaries"),
             )
         details = case.get("result") or {}
+        from finbot.experiments.observations import case_observations
+
+        observations = case.get("observations") or case_observations(details, case_events)
         result["cases"].append(
             {
                 "id": case_id,
@@ -650,6 +662,40 @@ def build_archive(
             )
         result["agents"].extend(agents)
         result["calls"].extend(calls)
+        result["case_observations"].append({"case_id": case_id, "observations": observations})
+        span_ids = {
+            a["source_agent_run_id"]: a["id"] for a in agents if a.get("source_agent_run_id")
+        }
+        for iteration in observations.get("iterations", []):
+            iteration_id = _id(
+                case_id, "iteration", iteration["source_agent_run_id"], iteration["iteration_index"]
+            )
+            result["iterations"].append(
+                {
+                    "id": iteration_id,
+                    "case_id": case_id,
+                    "agent_run_id": span_ids.get(iteration["source_agent_run_id"]),
+                    "source_agent_run_id": iteration["source_agent_run_id"],
+                    "agent_name": iteration["agent_name"],
+                    "iteration_index": iteration["iteration_index"],
+                    "started_at": _time(iteration.get("started_at")),
+                    "finished_at": _time(iteration.get("finished_at")),
+                    "execution_status": iteration["status"],
+                    "vanilla_confidence": iteration.get("vanilla_confidence"),
+                    "lexical_confidence": iteration.get("lexical_confidence"),
+                    "trace": {k: v for k, v in iteration.items() if k != "judge"},
+                }
+            )
+            judge = iteration.get("judge") or {"status": "not_requested"}
+            result["evaluations"].append(
+                {
+                    "iteration_id": iteration_id,
+                    "status": judge["status"],
+                    "confidence": judge.get("confidence"),
+                    "error_present": judge.get("error_present"),
+                    "assessment": judge,
+                }
+            )
     result["run"]["metrics"] = {
         **result["run"]["metrics"],
         **sum_costs(

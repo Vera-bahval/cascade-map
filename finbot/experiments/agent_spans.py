@@ -13,6 +13,13 @@ class AgentSpan:
     id: str
     parent_id: str | None
     agent_name: str
+    iteration: int | None = None
+
+
+def begin_iteration(index):
+    span = _active_span.get()
+    if span is not None:
+        span.iteration = index
 
 
 _active_span = ContextVar("experiment_agent_span", default=None)
@@ -24,11 +31,14 @@ def span_fields(agent_name=None):
         return {}
     if agent_name:
         span.agent_name = agent_name
-    return {
+    fields = {
         "agent_run_id": span.id,
         "parent_agent_run_id": span.parent_id,
         "agent_name": span.agent_name,
     }
+    if span.iteration is not None:
+        fields["iteration_index"] = span.iteration
+    return fields
 
 
 async def run_in_span(capture, agent_name, task_data, invoke, *, workflow_id=None):

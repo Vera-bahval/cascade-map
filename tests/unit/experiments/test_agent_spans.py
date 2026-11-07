@@ -242,4 +242,11 @@ async def test_real_repeated_delegations_link_each_llm_call_to_its_own_invocatio
     }
     assert all(e["agent_run_id"] == e["record"]["metadata"]["agent_run_id"] for e in calls)
     assert all(e["event_data"]["status"] == "completed" for e in ends)
+    iterations = store.job["cases"][0]["observations"]["iterations"]
+    assert len(iterations) == 5
+    assert [
+        r["iteration_index"] for r in iterations if r["source_agent_run_id"] == root["agent_run_id"]
+    ] == [1, 2, 3]
+    assert all(r["status"] == "completed" for r in iterations)
+    assert all(len(r["calls"]) == 1 for r in iterations)
     assert span_fields() == {}
