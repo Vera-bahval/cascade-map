@@ -14,6 +14,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:-sqlite://data/finbot.db}
       - POSTGRES_HOST=postgres
       - FINBOT_EXPERIMENTS_DB=${FINBOT_EXPERIMENTS_DB:-/app/data/experiments.db}
+      - FINBOT_RESULTS_PG_SSLROOTCERT=/app/certs/server.crt
     depends_on:
       redis:
         condition: service_healthy
@@ -24,7 +25,7 @@ services:
       - sqlite_data:/app/data
       - uploads:/app/uploads
       - cache:/app/cache
-      - ${FINBOT_RESULTS_CERT_DIR:-./certs}:/app/certs:ro
+      - ${FINBOT_RESULTS_CERT_FILE:-${FINBOT_RESULTS_CERT_DIR:-./certs}/server.crt}:/app/certs/server.crt:ro
     restart: unless-stopped
 
   redis:
