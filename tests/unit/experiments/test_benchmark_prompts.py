@@ -67,7 +67,7 @@ async def test_all_scenarios_expose_neutral_metadata_and_preserve_invoice_payloa
 
 
 def test_fixture_and_rubric_revision_participate_in_the_run_snapshot():
-    assert RUBRIC_VERSION == "cascade-map-rubric-2026-11-05-v2"
+    assert RUBRIC_VERSION == "cascade-map-rubric-2026-11-13-v3"
     assert scenario_catalog()[1] == versions()[1]
 
 

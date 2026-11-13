@@ -629,6 +629,40 @@ class Store:
                 raise KeyError(case_id)
             self._write_job(db, job)
 
+    def review_case(self, job_id, case_id, review, reviewer_key, *, expected_revision=None):
+        """Append an immutable review revision in the same transaction as its outbox."""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT data FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise KeyError(job_id)
+            job = json.loads(row[0])
+            case = next((c for c in job["cases"] if c["id"] == case_id), None)
+            if not case or case["status"] != "completed":
+                raise ValueError("Оценка доступна для завершённого сценария")
+            revision = len(case.get("assessment_history") or [])
+            if expected_revision is not None and expected_revision != revision:
+                raise ValueError("Разметка изменилась; обновите детали перед сохранением")
+            previous = case.get("assessment") or {}
+            base = previous if previous.get("reviewer_key") == reviewer_key else {}
+            assessment = {
+                **base,
+                **review,
+                "review_id": str(uuid.uuid4()),
+                "schema_version": 1,
+                "reviewer_key": reviewer_key,
+                "reviewed_at": stamp(),
+                "revision": revision + 1,
+            }
+            history = list(case.get("assessment_history") or [])
+            if previous and not history:
+                history.append({**previous, "review_id": str(uuid.uuid4()), "schema_version": 0})
+            assessment["revision"] = len(history) + 1
+            history.append(assessment)
+            case.update(assessment=assessment, assessment_history=history)
+            self._write_job(db, job)
+            return assessment
+
     def append_event(self, job_id, event):
         with self.db() as db:
             db.execute(

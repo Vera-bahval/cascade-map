@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -689,16 +690,119 @@ async def assess(
         raise HTTPException(404, "Сценарий не найден")
     if case["status"] != "completed":
         raise HTTPException(409, "Оценка доступна для завершённого сценария")
-    assessment = {
-        **(case.get("assessment") or {}),
-        **body.model_dump(exclude_unset=True, exclude_none=True),
-        "label": TYPES[body.type],
-        "reviewed_at": stamp(),
-        "reviewer": session.user_id,
-    }
-    store.update_case(job_id, case_id, assessment=assessment)
+    from finbot.experiments.research_reviews import reviewer_key, validate_review
+
+    data = body.model_dump(exclude_unset=True, exclude={"expected_revision"})
+    case_events = [e for e in store.report_events(job_id) if e.get("case_id") == case_id]
+    lookup(validate_review, case, data, case_events)
+    assessment = lookup(
+        store.review_case,
+        job_id,
+        case_id,
+        {
+            **data,
+            "label": TYPES[body.type],
+            "outcome_policy_version": (
+                (case.get("scenario_snapshot") or {}).get("outcome_policy") or {}
+            ).get("version"),
+        },
+        reviewer_key(session.user_id),
+        expected_revision=body.expected_revision,
+    )
     store.append_event(job_id, {"kind": "assessment", "case_id": case_id, **assessment})
     return assessment
+
+
+def review_case_from_source(case_id, source, who, store):
+    if source == "archive":
+        from finbot.experiments.archive import PostgresArchive
+        from finbot.experiments.research_reviews import archive_case
+
+        return research_archive_call(archive_case, PostgresArchive(), case_id)
+    from finbot.experiments.analytics_data import read_dataset
+    from finbot.experiments.research_outcomes import review_targets
+
+    dataset = read_dataset(store, who, AnalyticsFilter(source="local", include_demo=True))
+    case = next((c for c in dataset["cases"] if c["id"] == case_id), None)
+    if not case:
+        raise HTTPException(404, "Сценарий не найден")
+    case["run"] = next(r for r in dataset["runs"] if r["id"] == case["run_id"])
+    case["review_targets"] = review_targets(case)
+    return case
+
+
+def research_archive_call(fn, *args):
+    try:
+        return fn(*args)
+    except KeyError:
+        raise HTTPException(404, "Сценарий не найден") from None
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"Архив разметки недоступен. Проверьте подключение и миграцию v3. Тип ошибки: {type(exc).__name__}",
+        ) from None
+
+
+@router.get("/analytics/cases/{case_id}")
+def research_case(
+    case_id: uuid.UUID,
+    source: Literal["local", "archive"] = "local",
+    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
+    store: Store = Depends(get_store),
+):
+    from finbot.experiments.research_outcomes import environment_outcome
+
+    check_analytics_source(AnalyticsFilter(source=source), session)
+    case = review_case_from_source(str(case_id), source, who, store)
+    case["research_outcome"] = environment_outcome(case, demonstration=case["run"].get("is_demo"))
+    return case
+
+
+@router.post("/analytics/cases/{case_id}/assessment", status_code=201)
+def research_assess(
+    case_id: uuid.UUID,
+    body: AssessmentInput,
+    source: Literal["local", "archive"] = "local",
+    session: SessionContext = Depends(get_session_context),
+    who: str = Depends(get_owner),
+    store: Store = Depends(get_store),
+):
+    from finbot.experiments.research_reviews import (
+        reviewer_key,
+        save_archive_review,
+        validate_review,
+    )
+
+    check_analytics_source(AnalyticsFilter(source=source), session)
+    case = review_case_from_source(str(case_id), source, who, store)
+    if case["execution_status"] != "completed":
+        raise HTTPException(409, "Оценка доступна для завершённого сценария")
+    data = body.model_dump(exclude_unset=True, exclude={"expected_revision"})
+    lookup(validate_review, case, data)
+    data["label"] = TYPES[body.type]
+    if source == "archive":
+        from finbot.experiments.archive import PostgresArchive
+
+        return research_archive_call(
+            save_archive_review,
+            PostgresArchive(),
+            str(case_id),
+            data,
+            reviewer_key(session.user_id),
+            body.expected_revision,
+        )
+    run = lookup(store.get_job, case["run"]["source_run_id"], who)
+    return lookup(
+        store.review_case,
+        run["id"],
+        case["source_case_id"],
+        data,
+        reviewer_key(session.user_id),
+        expected_revision=body.expected_revision,
+    )
 
 
 @router.post("/local/pull", status_code=202)

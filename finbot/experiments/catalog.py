@@ -39,17 +39,20 @@ LOCAL_CATALOG = [
         "description": "Более крупный вариант. Учитывайте память под веса и контекст; загрузка может занять несколько ГБ.",
     },
 ]
-RUBRIC_VERSION = "cascade-map-rubric-2026-11-05-v2"
+RUBRIC_VERSION = "cascade-map-rubric-2026-11-13-v3"
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def scenario_catalog():
+    from finbot.experiments.research_outcomes import outcome_policy
+
     content = (ROOT / "finbot/agents/cascade_scenarios.json").read_bytes()
     scenarios = json.loads(content)["scenarios"]
     for scenario in scenarios:
         scenario["invoice"]["invoice_prefix"] = "INV"
+        scenario["outcome_policy"] = outcome_policy(scenario["id"])
     return scenarios, hashlib.sha256(content + RUBRIC_VERSION.encode()).hexdigest()
 
 

@@ -6,6 +6,7 @@ from uuid import uuid4
 from psycopg2.extras import Json
 
 TABLES = (
+    "cm_case_reviews",
     "cm_runs",
     "cm_cases",
     "cm_agent_runs",
@@ -84,6 +85,10 @@ def check_archive(archive, *, write_probe=False):
                     cur.execute(
                         "INSERT INTO public.cm_case_observations(case_id,observations) VALUES (%s,%s)",
                         (case, Json({"probe": True})),
+                    )
+                    cur.execute(
+                        "INSERT INTO public.cm_case_reviews(id,case_id,reviewer_key,reviewed_at,assessment) VALUES (%s,%s,'storage_probe',now(),%s)",
+                        (str(uuid4()), case, Json({"probe": True})),
                     )
                     cur.execute(
                         """INSERT INTO public.cm_agent_runs(id,case_id,source_agent_run_id,agent_name,result,input,metrics,provenance)

@@ -1,4 +1,4 @@
-/* Read-only analytics; every database value is rendered as text. */
+/* Read-only analysis; human annotations are saved only by an explicit action. */
 (() => {
   'use strict';
   const API = '/vendor/api/v1/experiments/analytics';
@@ -51,6 +51,7 @@
       end:$('end').value ? new Date($('end').value).toISOString() : null,
       include_demo:$('demo').checked, config:jsonObject('config'), metadata:jsonObject('metadata'),
       matrix:$('matrix').value, label_layer:$('labels').value, threshold:Number($('threshold').value),
+      truth_layer:$('truth').value,
       bins:Number($('bins').value), k:Number($('k').value)};
   }
   function options(id, items) {
@@ -116,8 +117,8 @@
     $('matrix-size').textContent = `n = ${r.matrix.n} · исключено ${r.matrix.excluded}`;
     $('matrix-help').textContent = r.filters.matrix === 'detector'
       ? 'Строки — ручные метки завершённых сценариев. Все типы детектора, включая reasoning_error, text_propagation и needs_review, показаны отдельно. Различия таксономий требуют разбора; автоматического переименования нет.'
-      : `Эталон — error_present внешнего судьи; сигнал ошибки — confidence < ${r.filters.threshold}. Сравнение с тем же судьёй не заменяет независимую разметку.`;
-    stats('scores', [['Accuracy', percent(r.matrix.accuracy)], ['Macro F1', number(r.matrix.macro_f1)], ['Сравнимых наблюдений', r.matrix.n]]);
+      : `Эталон — ${r.filters.truth_layer==='human'?'независимая ручная метка конкретной итерации':'error_present внешнего судьи'}; сигнал ошибки — confidence < ${r.filters.threshold}. Общая оценка вызова на отдельные итерации не переносится.`;
+    stats('scores', [['Accuracy', percent(r.matrix.accuracy)], ['Macro F1', number(r.matrix.macro_f1)], ['Cohen κ',number(r.matrix.cohen_kappa)], ['Сравнимых наблюдений', r.matrix.n]]);
     table($('class-scores'), ['Класс', 'Support', 'Precision', 'Recall', 'F1'], r.matrix.per_class.map(c => [names[c.label] || c.label, c.support, number(c.precision), number(c.recall), number(c.f1)]));
     $('model-matrices').replaceChildren();
     r.matrix.by_model.forEach(matrix => {
@@ -156,7 +157,8 @@
     stats('baseline', [['P_casc', percent(s.p_casc.value), rate(s.p_casc)], ['P_pay · перевод состоялся', percent(s.p_pay.value), rate(s.p_pay)], ['Роль Payments достигнута', percent(s.p_reached_payments.value), rate(s.p_reached_payments)], [`Риск ≥1 каскада за k=${r.filters.k}`, percent(s.cascade_k), 'При независимых повторах'], ['Ошибка исхода', percent(s.outcome_failure.value), rate(s.outcome_failure)]]);
     table($('groups'), ['Модель', 'Сценарий', 'T', 'Seed', 'N / размечено', 'P_casc · 95% ДИ', 'Типы F(m,t) · количества', 'Длительность · среднее, мс'], r.groups.map(g => [g.model, g.scenario, g.temperature, g.seed, `${g.cases} / ${g.labels}`, rate(g.p_casc), JSON.stringify(g.types), number(g.duration_ms.mean)]));
     table($('dimensions'), ['Срез', 'Модель', 'Значение', 'N', 'P_casc · 95% ДИ'], Object.entries(r.dimensions).flatMap(([dimension, rows]) => rows.map(g => [dimension, g.model, g.value, g.cases, rate(g.p_casc)])));
-    table($('confidence'), ['Слой', 'Модель', 'Средняя c', 'N(c)', 'Средняя Δconf', 'N(Δ)', 'Brier ↔ судья', 'ECE ↔ судья', 'N калибровки'], Object.entries(r.confidence).flatMap(([layer, data]) => [{...data, model:'Все выбранные'}, ...data.by_model].map(item => [layer, item.model, number(item.values.mean), item.values.n, number(item.delta.mean), item.delta.n, number(item.calibration.brier), number(item.calibration.ece), item.calibration.n])));
+    renderResearch(r);
+    const truth=r.filters.truth_layer==='human'?'человек':'судья';table($('confidence'), ['Слой', 'Модель', 'Средняя c', 'N(c)', 'Средняя Δconf', 'N(Δ)', `Brier ↔ ${truth}`, `ECE ↔ ${truth}`, 'N калибровки'], Object.entries(r.confidence).flatMap(([layer, data]) => [{...data, model:'Все выбранные'}, ...data.by_model].map(item => [layer, item.model, number(item.values.mean), item.values.n, number(item.delta.mean), item.delta.n, number(item.calibration.brier), number(item.calibration.ece), item.calibration.n])));
     table($('profiles'), ['Слой', 'Case', 'Роль / исполнение', 'Профиль', 'Значения', 'Δconf'], Object.entries(r.confidence).flatMap(([layer, data]) => data.profiles.map(p => [layer, p.case_id, `${p.agent} / ${p.agent_run_id}`, spark(p.values), p.values.map(number).join(' → '), number(p.delta)])));
     stats('legacy', [['Heuristic confidence', number(r.legacy.heuristic_confidence.mean), `N=${r.legacy.heuristic_confidence.n}`], ['Legacy degradation', number(r.legacy.saved_confidence_degradation.mean), `N=${r.legacy.saved_confidence_degradation.n}`], ['model_confidence', number(r.legacy.model_confidence.mean), `N=${r.legacy.model_confidence.n}`]]);
     table($('agent-stats'), ['Модель', 'Агент', 'Heuristic mean / N', 'Самооценка mean / N', 'Операционные метрики'], r.legacy.agents.map(a => [a.model, a.agent, `${number(a.heuristic_confidence.mean)} / ${a.heuristic_confidence.n}`, `${number(a.model_confidence.mean)} / ${a.model_confidence.n}`, jsonCell(a.operational)]));
@@ -167,6 +169,27 @@
     $('interpretation').textContent = '';
     $('interpret').disabled = !state.catalog.interpreter_available || !c.completed;
   }
+  function renderResearch(report){
+    const research=report.research,o=research.outcomes;
+    stats('research-outcomes', [['Вредный исход',percent(o.harmful_outcome.value),rate(o.harmful_outcome)],['Ошибочная оплата',percent(o.wrong_payment.value),rate(o.wrong_payment)],['Ложная блокировка',percent(o.wrong_block.value),rate(o.wrong_block)],['Полезность',percent(o.utility.value),rate(o.utility)],['Успех атаки',percent(o.attack_success.value),rate(o.attack_success)],['Покрытие исходов',percent(o.outcome_coverage.value),rate(o.outcome_coverage)],['FPR контроля',percent(o.control_false_alarm.value),rate(o.control_false_alarm)],['κ двух разметчиков',number(o.interrater_kappa.value),`N=${o.interrater_kappa.n}`],['Потеря атрибуции · ручная',percent(o.reviewed_claim_laundering.value),rate(o.reviewed_claim_laundering)]]);
+    table($('research-groups'),['Модель','Сценарий','T','Seed','Вред / N','Utility / N','Покрытие ручных меток','needs_review','Границы P_casc с неизвестными'],report.groups.map(g=>{const x=g.research;return [g.model,g.scenario,g.temperature,g.seed,rate(x.harmful_outcome),rate(x.utility),rate(x.human_label_coverage),rate(x.needs_review),`${percent(x.cascade_bounds.lower)} … ${percent(x.cascade_bounds.upper)} · неизвестно ${x.cascade_bounds.unresolved}`];}));
+    $('research-joint').textContent=JSON.stringify({utility_attack:o.utility_attack_joint,p_casc_permissive:o.p_casc_permissive,p_casc_restrictive:o.p_casc_restrictive,policy_versions:o.policy_versions,outcome_sources:o.outcome_sources},null,2);
+    table($('error-generation'),['Модель','Роль','Размечено вызовов','EGR · чистый вход','EAR · наблюдательный'],research.errors.by_agent.map(a=>[a.model,a.agent,a.reviewed_invocations,rate(a.egr),rate(a.ear_observational)]));
+    table($('error-dependencies'),['Модель','Источник → получатель','P(err_j | err_i)','P(err_j | correct_i)','RR · наблюдательный'],research.errors.dependencies.map(e=>[e.model,`${e.source} → ${e.target}`,rate(e.p_error_given_error),rate(e.p_error_given_correct),number(e.rr_observational)]));
+    table($('stability'),['Модель','Сценарий','N','Согласие повторов','Std частот между seed','Seed-группы / параметры'],research.stability.map(s=>[s.model,s.scenario,s.eligible_cases,rate(s.repeat_agreement),number(s.between_seed_frequency.std),jsonCell({seed_rates:s.seed_cascade_rates,configuration:s.configuration_signature})]));
+    table($('review-cases'),['Модель','Сценарий','Попытка','Исход','Источник','Разметка'],report.cases.map(c=>{const button=node('button','Открыть','exp-button exp-secondary');button.type='button';button.onclick=()=>action(button,()=>openReview(c.case_id,report.source));return [c.model,c.scenario,c.case_id,c.research_outcome.harm_type,c.research_outcome.source,button];}));
+  }
+  async function openReview(id,source){
+    const c=await api(`/cases/${encodeURIComponent(id)}?source=${source}`),host=$('review-body');host.replaceChildren();$('review-title').textContent=`Разметка · ${c.scenario_id} · ${id.slice(0,8)}`;
+    const review=c.human_review || {},type=node('select');for(const [value,title] of Object.entries({...names,needs_review:'Недостаточно данных'})){if(['correct','error'].includes(value))continue;const option=node('option',title);option.value=value;type.append(option);}type.value=review.type || 'needs_review';
+    const label=node('label','Тип каскада · независимая оценка');label.append(type);host.append(label);
+    const reason=node('input');reason.value=review.reason || '';reason.maxLength=4000;const reasonLabel=node('label','Обоснование');reasonLabel.append(reason);host.append(reasonLabel);
+    const read=window.CascadeResearchReview.fields(host,c,()=>reason.value.trim());
+    const evidence=node('details');evidence.append(node('summary','Сохранённые данные для проверки'),node('pre',JSON.stringify({outcome:c.research_outcome,agents:c.agents,result:c.result,observations:c.observations},null,2),'exp-trace'));host.append(evidence);
+    const save=node('button','Сохранить новую версию оценки','exp-button exp-primary');save.type='button';save.onclick=()=>action(save,async()=>{if(reason.value.trim().length<10)throw new Error('Укажите обоснование не менее 10 символов.');await api(`/cases/${encodeURIComponent(id)}/assessment?source=${source}`,{type:type.value,reason:reason.value.trim(),...read()});$('review-dialog').close();await query();message('Новая версия независимой оценки сохранена.');});host.append(save);
+    if(!$('review-dialog').open)$('review-dialog').showModal();
+  }
+  $('review-close').addEventListener('click',()=>$('review-dialog').close());
   async function loadRows() {
     if (!state.applied || !$('table').value) return;
     const version = ++state.rowVersion;

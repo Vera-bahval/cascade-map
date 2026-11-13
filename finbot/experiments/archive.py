@@ -28,6 +28,7 @@ JSON_COLUMNS = {
     "evaluations": {"assessment"},
     "case_observations": {"observations"},
     "series_runs": set(),
+    "reviews": {"assessment"},
 }
 TABLES = {
     "run": "cm_runs",
@@ -39,6 +40,7 @@ TABLES = {
     "evaluations": "cm_iteration_evaluations",
     "case_observations": "cm_case_observations",
     "series_runs": "cm_series_runs",
+    "reviews": "cm_case_reviews",
 }
 
 
@@ -118,6 +120,7 @@ class PostgresArchive:
                 if len(cur.fetchall()) != 3:
                     raise ValueError("Base billing migration must be applied by its owner")
             cur.execute((directory / "results_v2.sql").read_text())
+            cur.execute((directory / "results_v3.sql").read_text())
 
     def _insert(self, cur, kind, rows):
         if not rows:
@@ -173,12 +176,23 @@ class PostgresArchive:
             ):
                 return {"status": "stale", "id": run["id"]}
             # Replace one immutable-source snapshot atomically, including all child rows.
+            cur.execute(
+                "SELECT v.* FROM public.cm_case_reviews v JOIN public.cm_cases c ON c.id=v.case_id WHERE c.run_id=%s",
+                (run["id"],),
+            )
+            columns = [d.name for d in cur.description]
+            reviews = {str(row[0]): dict(zip(columns, row)) for row in cur.fetchall()}
+            reviews.update({str(row["id"]): row for row in bundle.get("reviews", [])})
             cur.execute("DELETE FROM public.cm_runs WHERE id=%s", (run["id"],))
             self._insert(cur, "run", [run])
             for kind in ("cases", "agents", "calls", "events"):
                 self._insert(cur, kind, bundle[kind])
             for kind in ("series_runs", "case_observations", "iterations", "evaluations"):
                 self._insert(cur, kind, bundle.get(kind, []))
+            case_ids = {str(c["id"]) for c in bundle["cases"]}
+            self._insert(
+                cur, "reviews", [row for row in reviews.values() if str(row["case_id"]) in case_ids]
+            )
         return {
             "status": "synced",
             "id": run["id"],

@@ -87,4 +87,4 @@
   <dialog id="exp-detail" class="exp-dialog"><div class="exp-section-title"><div><span class="exp-eyebrow">RUN DETAILS</span><h3 id="exp-detail-title">Прогон</h3></div><button type="button" id="exp-close-detail" class="exp-button exp-secondary" aria-label="Закрыть детали">Закрыть ×</button></div><div id="exp-detail-content"></div></dialog>
 </div>
 {% endblock %}
-{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/experiments.js') }}?v={{ workbench_script_version }}" defer></script>{% endblock %}
+{% block extra_js %}<script src="{{ url_for('static', path='js/vendor/research-review.js') }}?v={{ workbench_script_version }}" defer></script><script src="{{ url_for('static', path='js/vendor/experiments.js') }}?v={{ workbench_script_version }}" defer></script>{% endblock %}

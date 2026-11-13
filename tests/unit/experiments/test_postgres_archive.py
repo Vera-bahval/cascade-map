@@ -68,6 +68,107 @@ def test_archive_health_probe_verifies_linked_writes_without_leaving_rows(archiv
         assert query(archive, f"SELECT count(*) AS n FROM public.{table}")[0]["n"] == 0
 
 
+def test_archive_only_reviews_survive_result_resync_and_keep_independent_revisions(archive):
+    from finbot.experiments.research_reviews import (
+        archive_case,
+        save_archive_review,
+        validate_review,
+    )
+
+    job, events = source()
+    payload = build_archive(job, events)
+    archive.save(payload)
+    ident = payload["cases"][0]["id"]
+    case = archive_case(archive, ident)
+    assert case["review_targets"]
+    ref = next(t["agent_ref"] for t in case["review_targets"] if t["agent"] == "invoice_agent")
+    review = {
+        "type": "no_cascade",
+        "reason": "Independent trace and tool evidence inspected",
+        "agent_errors": [
+            {
+                "agent_ref": ref,
+                "input_state": "clean",
+                "error_present": False,
+                "error_origin": "none",
+                "reason": "Tool results and summary are consistent",
+            }
+        ],
+    }
+    validate_review(case, review)
+    first = save_archive_review(archive, ident, review, "reviewer-a", 0)
+    assert first["revision"] == 1
+    archive.save(payload)  # A machine's older source snapshot must not erase archive-only labels.
+    refreshed = archive_case(archive, ident)
+    assert refreshed["human_review"]["review_id"] == first["review_id"]
+    assert refreshed["assessment_revision"] == 1
+    with pytest.raises(ValueError, match="изменилась"):
+        save_archive_review(archive, ident, review, "reviewer-a", 0)
+    second = save_archive_review(
+        archive,
+        ident,
+        {"type": "needs_review", "reason": "Another rater needs more evidence"},
+        "reviewer-b",
+        1,
+    )
+    assert "agent_errors" not in second
+    archive.save(payload)
+    refreshed = archive_case(archive, ident)
+    assert refreshed["assessment_revision"] == 2
+    assert refreshed["human_review"]["review_id"] == second["review_id"]
+    assert refreshed["result"] == payload["cases"][0]["result"]
+
+
+def test_archive_annotation_api_uses_source_guard_and_returns_not_found(archive, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from finbot.core.auth.middleware import get_session_context
+    from finbot.core.auth.session import SessionContext
+    from finbot.experiments.api import get_owner, router
+
+    monkeypatch.setattr("finbot.experiments.archive.PostgresArchive", lambda: archive)
+    monkeypatch.setattr("finbot.experiments.api.archive_analytics_allowed", lambda _: True)
+    job, events = source()
+    payload = build_archive(job, events)
+    archive.save(payload)
+    case_id = payload["cases"][0]["id"]
+    app = FastAPI()
+    app.include_router(router)
+    now = datetime.now(UTC)
+    app.dependency_overrides[get_session_context] = lambda: SessionContext(
+        "session", "rater", False, "namespace", now, now + timedelta(days=1)
+    )
+    app.dependency_overrides[get_owner] = lambda: "owner"
+    with TestClient(app) as client:
+        assert (
+            client.get(f"/api/v1/experiments/analytics/cases/{uuid4()}?source=archive").status_code
+            == 404
+        )
+        response = client.post(
+            f"/api/v1/experiments/analytics/cases/{case_id}/assessment?source=archive",
+            json={
+                "type": "no_cascade",
+                "reason": "All supplied evidence independently inspected",
+                "expected_revision": 0,
+            },
+        )
+        assert response.status_code == 201, response.text
+        assert (
+            client.post(
+                f"/api/v1/experiments/analytics/cases/{case_id}/assessment?source=archive",
+                json={
+                    "type": "no_cascade",
+                    "reason": "All supplied evidence independently inspected",
+                    "expected_revision": 0,
+                },
+            ).status_code
+            == 409
+        )
+
+
 def test_series_outbox_archives_configuration_before_execution_and_links_completed_run(
     archive, tmp_path
 ):

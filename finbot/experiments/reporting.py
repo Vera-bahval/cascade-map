@@ -695,6 +695,7 @@ def enrich_report(job, events):
         calls = request_events(case_events)
         requests = [request_summary(event, config) for event in calls]
         from finbot.experiments.observations import case_observations
+        from finbot.experiments.research_outcomes import environment_outcome, review_targets
 
         cases.append(
             {
@@ -704,6 +705,9 @@ def enrich_report(job, events):
                 "metrics": {**(case.get("metrics") or {}), **billing["cases"][case.get("id")]},
                 "report": case_report(case, case_events, demo),
                 "requests": requests,
+                "research_outcome": environment_outcome(case, demonstration=demo),
+                "review_targets": review_targets(case, case_events),
+                "assessment_revision": len(case.get("assessment_history") or []),
             }
         )
     return {

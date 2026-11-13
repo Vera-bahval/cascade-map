@@ -33,8 +33,20 @@ def normalize(tables, source):
     for run in runs:
         run["series_id"] = links.get(run["id"]) or run.get("metadata", {}).get("series_id")
     agents, iterations, observations, tool_events = {}, {}, {}, {}
+    reviews = {}
+    evidence = {}
+    for row in tables.get("cm_case_reviews", []):
+        reviews.setdefault(row["case_id"], []).append(row["assessment"])
     for row in tables.get("cm_events", []):
-        if row["event_type"] == "tool_call_start":
+        if str(row.get("source_seq", "")).isdigit():
+            evidence.setdefault(row["case_id"], []).append(int(row["source_seq"]))
+        if row["event_type"] in {
+            "tool_call_start",
+            "tool_call_success",
+            "tool_call_failure",
+            "mcp_tool_call_success",
+            "mcp_tool_call_failure",
+        }:
             tool_events.setdefault(row["case_id"], []).append(row)
     for row in tables.get("cm_case_observations", []):
         observations[row["case_id"]] = dict(row.get("observations") or {})
@@ -59,9 +71,24 @@ def normalize(tables, source):
         observation = observations.get(row["id"], {})
         if row["id"] in iterations:
             observation["iterations"] = iterations[row["id"]]
+        history = sorted(
+            reviews.get(row["id"], []),
+            key=lambda r: (r.get("reviewed_at") or "", r.get("review_id") or ""),
+        )
+        candidates = [r for r in [row.get("human_review"), *history] if r]
+        latest = (
+            max(candidates, key=lambda r: (r.get("reviewed_at") or "", r.get("review_id") or ""))
+            if candidates
+            else {}
+        )
         cases.append(
             {
                 **row,
+                "human_review": latest,
+                "stored_human_review": row.get("human_review") or {},
+                "assessment_history": history,
+                "assessment_revision": len(history),
+                "evidence_sequences": evidence.get(row["id"], []),
                 "observations": observation,
                 "agents": agents.get(row["id"], []),
                 "tool_events": tool_events.get(row["id"], []),
@@ -194,6 +221,7 @@ def archive_read(
                 "cm_events",
                 "cm_case_observations",
                 "cm_agent_iterations",
+                "cm_case_reviews",
             ):
                 scopes[name] = ("t.case_id IN (" + case_scope + ")", case_params)
             scopes["cm_iteration_evaluations"] = (
@@ -233,15 +261,20 @@ def archive_read(
                 "cm_case_observations",
                 "cm_agent_iterations",
                 "cm_iteration_evaluations",
+                "cm_case_reviews",
             ):
                 if name not in columns:
                     continue
                 where, params = scopes[name]
                 selection = "t.*"
                 if name == "cm_cases":
-                    selection = """t.id,t.run_id,t.scenario_id,t.execution_status,t.duration_ms,
-                        t.metrics,t.human_review,t.cascade_location,
+                    selection = """t.id,t.run_id,t.scenario_id,t.repeat_index,t.execution_status,t.duration_ms,
+                        t.metrics,t.human_review,t.cascade_location,t.scenario_snapshot,
                         jsonb_build_object('payment',t.result->'payment',
+                            'technical_errors',t.result->'technical_errors',
+                            'demonstration',t.result->'demonstration',
+                            'assessment',t.result->'assessment',
+                            'research_outcome',t.result->'research_outcome',
                             'cascade_analysis',t.result->'cascade_analysis') AS result,
                         jsonb_build_object('detector',jsonb_build_object(
                             'type',t.report->'detector'->'type',
@@ -268,7 +301,7 @@ def archive_read(
                 sql.SQL(
                     "SELECT t.* FROM public.cm_events t WHERE "
                     + where
-                    + " AND t.event_type='tool_call_start'"
+                    + " AND t.event_type IN ('tool_call_start','tool_call_success','tool_call_failure','mcp_tool_call_success','mcp_tool_call_failure')"
                 ).format(),
                 params,
             )

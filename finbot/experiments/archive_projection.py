@@ -571,6 +571,7 @@ def build_archive(
         "iterations": [],
         "evaluations": [],
         "case_observations": [],
+        "reviews": [],
         "series_runs": (
             [{"run_id": run_id, "series_id": job["series_id"]}] if job.get("series_id") else []
         ),
@@ -598,7 +599,14 @@ def build_archive(
                 and agent["provenance"]["identity"] != "agent_chain_only"
                 and not agent["provenance"].get("ambiguous_boundaries"),
             )
-        details = case.get("result") or {}
+        from finbot.experiments.research_outcomes import environment_outcome
+
+        details = {
+            **(case.get("result") or {}),
+            "research_outcome": environment_outcome(
+                {**case, "assessment": {}, "human_review": {}}, demonstration=demo
+            ),
+        }
         from finbot.experiments.observations import case_observations
 
         observations = case.get("observations") or case_observations(details, case_events)
@@ -661,6 +669,20 @@ def build_archive(
                 }
             )
         result["agents"].extend(agents)
+        for review in case.get("assessment_history") or []:
+            result["reviews"].append(
+                {
+                    "id": review.get("review_id")
+                    or _id(
+                        case_id, "review", review.get("reviewed_at"), review.get("reviewer_key")
+                    ),
+                    "case_id": case_id,
+                    "reviewer_key": review.get("reviewer_key"),
+                    "reviewed_at": _time(review.get("reviewed_at")),
+                    "schema_version": review.get("schema_version", 0),
+                    "assessment": review,
+                }
+            )
         result["calls"].extend(calls)
         result["case_observations"].append({"case_id": case_id, "observations": observations})
         span_ids = {

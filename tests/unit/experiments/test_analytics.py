@@ -225,7 +225,7 @@ def test_local_api_is_owner_scoped_and_tables_expose_no_secrets(analytics_client
     create_job(store, "other", "foreign")
     catalog = client.get("/api/v1/experiments/analytics/catalog").json()
     assert [r["model"] for r in catalog["runs"]] == ["visible"]
-    assert len(catalog["tables"]) == 11
+    assert len(catalog["tables"]) == 12
     report = client.post("/api/v1/experiments/analytics/query", json={"include_demo": True})
     assert report.status_code == 200, report.text
     assert report.json()["coverage"]["runs"] == 1

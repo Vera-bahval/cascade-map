@@ -573,7 +573,17 @@ async def run_case(store, job, case, scenario):
             }
         duration = time.monotonic() - started
         from finbot.experiments.observations import case_observations
+        from finbot.experiments.research_outcomes import environment_outcome
 
+        result["research_outcome"] = environment_outcome(
+            {
+                **case,
+                "status": status,
+                "result": result,
+                "scenario_snapshot": case.get("scenario_snapshot") or scenario,
+            },
+            demonstration=job["connection"].get("kind") == "mock",
+        )
         observations = case_observations(result, events)
         store.update_case(
             job["id"],
