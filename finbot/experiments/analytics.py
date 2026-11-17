@@ -1,14 +1,20 @@
 """Read-only research analytics. Missing evidence is never a negative label."""
 
+import json
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
-from math import isfinite, sqrt
+from math import isfinite
 from statistics import mean, pstdev
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from finbot.experiments.schemas import InputModel
+from finbot.experiments.analytics_statistics import (
+    apply_confidence_level,
+    sample_plan,
+    wilson_interval,
+)
 
 CLASSES = ["no_cascade", "dirty_data", "half_cascade", "midchain_cascade", "full_cascade"]
 CASCADE = set(CLASSES[2:])
@@ -33,6 +39,11 @@ class AnalyticsFilter(InputModel):
     threshold: float = Field(default=0.5, ge=0, le=1)
     bins: int = Field(default=10, ge=2, le=30)
     k: int = Field(default=5, ge=1, le=100)
+    confidence_level: float = Field(default=0.8, ge=0.5, le=0.999)
+    margin_of_error: float = Field(default=0.05, ge=0.001, le=0.25)
+    planning_metric: Literal["harmful_outcome", "utility", "attack_success", "p_casc"] = (
+        "harmful_outcome"
+    )
 
     @model_validator(mode="after")
     def dates(self):
@@ -65,15 +76,11 @@ def distribution(values):
 def fraction(positive, total, *, interval=True):
     if not total:
         return {"positive": positive, "n": 0, "value": None, "wilson95": None}
-    p, z = positive / total, 1.959963984540054
-    denominator = 1 + z * z / total
-    center = (p + z * z / (2 * total)) / denominator
-    margin = z * sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denominator
     return {
         "positive": positive,
         "n": total,
-        "value": p,
-        "wilson95": [max(0, center - margin), min(1, center + margin)] if interval else None,
+        "value": positive / total,
+        "wilson95": wilson_interval(positive, total) if interval else None,
     }
 
 
@@ -180,8 +187,10 @@ def calibration(pairs, bins):
 
 
 def summarize(dataset, filters):
+    from finbot.experiments.analytics_dashboard import build_dashboard
     from finbot.experiments.analytics_features import trace_features
     from finbot.experiments.research_metrics import (
+        condition_signature,
         error_generation,
         repeat_stability,
         research_group,
@@ -279,6 +288,14 @@ def summarize(dataset, filters):
             for layer in ("vanilla", "lexical", "judge"):
                 values = [confidence(r, layer) for r in rows]
                 valid = len(values) >= 2 and all(numeric(v) for v in values)
+                minimum, drawdown = None, None
+                if valid:
+                    minimum = min(values)
+                    peak = values[0]
+                    drawdown = 0.0
+                    for value in values:
+                        peak = max(peak, value)
+                        drawdown = max(drawdown, peak - value)
                 profiles[layer].append(
                     {
                         "case_id": case["id"],
@@ -287,6 +304,8 @@ def summarize(dataset, filters):
                         "agent": rows[0]["agent_name"],
                         "values": values,
                         "delta": values[0] - values[-1] if valid else None,
+                        "min_confidence": minimum,
+                        "max_drawdown": drawdown,
                     }
                 )
         agents = sorted(
@@ -330,6 +349,7 @@ def summarize(dataset, filters):
                 "model": run.get("model"),
                 "scenario": case["scenario_id"],
                 "temperature": run.get("config", {}).get("temperature"),
+                "top_p": run.get("config", {}).get("top_p"),
                 "seed": run.get("config", {}).get("seed"),
                 "type": reviewed if filters.label_layer == "human" else detected,
                 "human_type": reviewed,
@@ -414,7 +434,21 @@ def summarize(dataset, filters):
                 interval=False,
             ),
             "verification_depth": distribution(a["reads_before_write"] for a in verification),
+            "verification_coverage": fraction(
+                sum(a["reads_before_write"] is not None for a in verification),
+                len(verification),
+                interval=False,
+            ),
             "carry_over": distribution(a["trigram_recall"] for a in handoffs),
+            "literal_carry_over": fraction(
+                sum(a["literal_summary_present"] for a in handoffs), len(handoffs), interval=False
+            ),
+            "handoff_characters": distribution(a["summary_characters"] for a in handoffs),
+            "assertion_transition_candidates": fraction(
+                sum(a["assertion_transition_candidate"] for a in handoffs),
+                len(handoffs),
+                interval=False,
+            ),
             "operational": {
                 k: distribution(d["metrics"].get(k) for d in rows)
                 for k in metric_names
@@ -437,14 +471,16 @@ def summarize(dataset, filters):
     groups = []
     grouped = defaultdict(list)
     for row in details:
-        grouped[(row["model"], row["scenario"], row["temperature"], row["seed"])].append(row)
-    for (model, scenario, temperature, seed), rows in grouped.items():
+        grouped[(row["model"], row["scenario"], condition_signature(row))].append(row)
+    for (model, scenario, signature), rows in grouped.items():
         groups.append(
             {
                 "model": model,
                 "scenario": scenario,
-                "temperature": temperature,
-                "seed": seed,
+                "temperature": rows[0]["temperature"],
+                "top_p": rows[0]["top_p"],
+                "seed": rows[0]["seed"],
+                "configuration_signature": json.loads(signature),
                 **group_report(rows),
             }
         )
@@ -491,7 +527,7 @@ def summarize(dataset, filters):
         }
         for (model, agent), rows in agent_groups.items()
     ]
-    return {
+    result = {
         "source": dataset["source"],
         "filters": filters.model_dump(mode="json"),
         "coverage": {
@@ -538,6 +574,17 @@ def summarize(dataset, filters):
             "errors": error_generation(details, filters.agents),
             "stability": repeat_stability(details),
             "confidence_reference": filters.truth_layer,
+            "storage": {
+                "cases": len(cases),
+                "saved_outcomes": sum(
+                    isinstance((c.get("result") or {}).get("research_outcome"), dict) for c in cases
+                ),
+                "policy_snapshots": sum(
+                    bool((c.get("scenario_snapshot") or {}).get("outcome_policy")) for c in cases
+                ),
+                "reviewed_cases": sum(bool(manual_review(c)) for c in cases),
+                "review_revisions": sum(len(c.get("assessment_history") or []) for c in cases),
+            },
         },
         "legacy": {
             "heuristic_confidence": distribution(a["heuristic_confidence"] for a in legacy_agents),
@@ -557,7 +604,7 @@ def summarize(dataset, filters):
             "Матрицы уверенности: confidence < порога означает ошибку; эталон выбирается через truth_layer. human требует ручной метки точной итерации; judge показывает согласие с судьёй. Калибровка судьи по его же оценкам циклична.",
             "Δconf = c₁ − cₖ внутри одного исполнения агента, только при полном профиле из ≥2 значений. Vanilla и lexical — эвристики, не самооценка модели.",
             "Legacy confidence_degradation — сохранённая старая величина c₁−∏cᵢ по цепочке агентов. Она показана отдельно и не смешивается с итерационной Δconf.",
-            "Wilson 95% — описательный интервал доли; зависимость повторов требует кластерного анализа. Проверки значимости и причинные выводы не выполняются.",
+            f"Wilson {filters.confidence_level:.1%} — описательный двусторонний интервал доли. Планирование предполагает независимые повторы при фиксированных условиях; зависимость повторов требует кластерного анализа. Уровень доверия относится к каждой доле отдельно.",
             "cascade^k = 1−(1−p)^k — сценарий при независимых одинаково распределённых повторах, не измеренная вероятность серии.",
             "P_pay — доля размеченных каскадов с transfer_count > 0 среди каскадов с известным счётчиком переводов. Достижение роли Payments хранится отдельно в p_reached_payments.",
             "EAR/интервенционный RR требуют подмен входа. EGR требует проверенной разметки чистого входа; отсутствие найденной ошибки не доказывает чистоту.",
@@ -565,3 +612,39 @@ def summarize(dataset, filters):
             "Claim assertion — эвристическая доля утверждений как факта среди упоминаний CEO/Director. Carry-over проверяет буквальное покрытие триграмм summary во входах всех последующих исполнений с известным порядком, а не семантическое принятие.",
         ],
     }
+    for section in ("summary", "groups", "dimensions", "research"):
+        apply_confidence_level(result[section], filters.confidence_level)
+    result["sample_planning"] = {
+        "metric": filters.planning_metric,
+        "confidence_level": filters.confidence_level,
+        "margin_of_error": filters.margin_of_error,
+        "method": "wilson_width_with_pilot_interval_variance",
+        "groups": [
+            {
+                **{
+                    key: group[key]
+                    for key in (
+                        "model",
+                        "scenario",
+                        "temperature",
+                        "top_p",
+                        "seed",
+                        "configuration_signature",
+                    )
+                },
+                **sample_plan(
+                    (
+                        group["p_casc"]
+                        if filters.planning_metric == "p_casc"
+                        else group["research"][filters.planning_metric]
+                    ),
+                    group["cases"],
+                    filters.confidence_level,
+                    filters.margin_of_error,
+                ),
+            }
+            for group in groups
+        ],
+    }
+    result["dashboard"] = build_dashboard(details, runs, cases, filters.confidence_level)
+    return result

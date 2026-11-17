@@ -35,6 +35,8 @@ tests
 
 # OS
 .DS_Store
+._*
+**/._*
 Thumbs.db
 
 # Docs

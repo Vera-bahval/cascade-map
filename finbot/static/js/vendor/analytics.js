@@ -11,9 +11,13 @@
   };
   const number = v => v == null ? '—' : Number(v).toLocaleString('ru-RU', {maximumFractionDigits: 4});
   const percent = v => v == null ? '—' : `${number(v * 100)}%`;
-  const rate = r => r ? `${percent(r.value)} · ${r.positive}/${r.n}${r.wilson95 ? ` [${percent(r.wilson95[0])}; ${percent(r.wilson95[1])}]` : ''}` : '—';
+  const rate = r => {
+    if (!r || !r.n) return 'Нет оценённых наблюдений';
+    const interval = Object.hasOwn(r, 'confidence_interval') ? r.confidence_interval : r.wilson95;
+    return `${percent(r.value)} · ${r.positive}/${r.n}${interval ? ` · ДИ ${percent(r.confidence_level ?? 0.95)} [${percent(interval[0])}; ${percent(interval[1])}]` : ''}`;
+  };
   const names = {no_cascade:'Нет каскада', dirty_data:'Dirty data', half_cascade:'Half cascade', midchain_cascade:'Mid-chain cascade', full_cascade:'Full cascade', correct:'Без ошибки', error:'Ошибка'};
-  const state = {catalog: null, report: null, applied: null, offset: 0, total: 0, version: 0, rowVersion: 0, catalogVersion: 0};
+  const state = {catalog: null, report: null, applied: null, offset: 0, total: 0, version: 0, rowVersion: 0, catalogVersion: 0, profileOffset: 0};
   function message(text, error = false) {
     $('message').textContent = text;
     $('message').className = `exp-message${error ? ' error' : ''}`;
@@ -52,7 +56,10 @@
       include_demo:$('demo').checked, config:jsonObject('config'), metadata:jsonObject('metadata'),
       matrix:$('matrix').value, label_layer:$('labels').value, threshold:Number($('threshold').value),
       truth_layer:$('truth').value,
-      bins:Number($('bins').value), k:Number($('k').value)};
+      bins:Number($('bins').value), k:Number($('k').value),
+      confidence_level:Number($('confidence-level').value)/100,
+      margin_of_error:Number($('margin-of-error').value)/100,
+      planning_metric:$('planning-metric').value};
   }
   function options(id, items) {
     $(id).replaceChildren(...items.map(([value, text]) => {
@@ -136,12 +143,17 @@
       const line = document.createElementNS(ns, 'polyline');
       line.setAttribute('points', segment.join(' ')); line.setAttribute('fill', 'none'); line.setAttribute('stroke', '#7ee7ce'); line.setAttribute('stroke-width', '2'); svg.append(line); segment = [];
     };
-    values.forEach((v, i) => { if (v == null) { draw(); return; } segment.push(`${5 + 170 * i / Math.max(1, values.length - 1)},${40 - v * 35}`); }); draw();
+    values.forEach((v, i) => { if (v == null) { draw(); return; }
+      const x = 5 + 170 * i / Math.max(1, values.length - 1), y = 40 - v * 35;
+      const point = document.createElementNS(ns, 'circle');
+      point.setAttribute('cx', x); point.setAttribute('cy', y); point.setAttribute('r', '2.5'); point.setAttribute('fill', '#7ee7ce'); svg.append(point);
+      segment.push(`${x},${y}`); }); draw();
     return svg;
   }
   function render() {
     const r = state.report, c = r.coverage, s = r.summary;
     $('results').hidden = false; $('export').disabled = false;
+    document.dispatchEvent(new CustomEvent('analytics:report', {detail:r}));
     stats('coverage', [['Прогоны', c.runs], ['Сценарии', c.cases], ['Завершены без demo', c.completed], ['Ручные метки', c.human_labels], ['Итерации', c.iterations]]);
     $('statuses').textContent = `Исполнение: ${JSON.stringify(c.execution_statuses)} · Оценщик: ${JSON.stringify(c.judge_statuses)} · Детектор: ${JSON.stringify(c.detector_types)}`;
     renderMatrix();
@@ -155,29 +167,111 @@
     });
     table($('type-map'), ['Модель', ...r.type_map.types], typeRows);
     stats('baseline', [['P_casc', percent(s.p_casc.value), rate(s.p_casc)], ['P_pay · перевод состоялся', percent(s.p_pay.value), rate(s.p_pay)], ['Роль Payments достигнута', percent(s.p_reached_payments.value), rate(s.p_reached_payments)], [`Риск ≥1 каскада за k=${r.filters.k}`, percent(s.cascade_k), 'При независимых повторах'], ['Ошибка исхода', percent(s.outcome_failure.value), rate(s.outcome_failure)]]);
-    table($('groups'), ['Модель', 'Сценарий', 'T', 'Seed', 'N / размечено', 'P_casc · 95% ДИ', 'Типы F(m,t) · количества', 'Длительность · среднее, мс'], r.groups.map(g => [g.model, g.scenario, g.temperature, g.seed, `${g.cases} / ${g.labels}`, rate(g.p_casc), JSON.stringify(g.types), number(g.duration_ms.mean)]));
-    table($('dimensions'), ['Срез', 'Модель', 'Значение', 'N', 'P_casc · 95% ДИ'], Object.entries(r.dimensions).flatMap(([dimension, rows]) => rows.map(g => [dimension, g.model, g.value, g.cases, rate(g.p_casc)])));
+    table($('groups'), ['Модель', 'Сценарий', 'T', 'top_p', 'Seed', 'Условия', 'N / размечено', `P_casc · ${percent(r.filters.confidence_level)} ДИ`, 'Типы F(m,t) · количества', 'Длительность · среднее, мс'], r.groups.map(g => [g.model, g.scenario, g.temperature, g.top_p, g.seed, jsonCell(g.configuration_signature), `${g.cases} / ${g.labels}`, rate(g.p_casc), JSON.stringify(g.types), number(g.duration_ms.mean)]));
+    table($('dimensions'), ['Срез', 'Модель', 'Значение', 'N', `P_casc · ${percent(r.filters.confidence_level)} ДИ`], Object.entries(r.dimensions).flatMap(([dimension, rows]) => rows.map(g => [dimension, g.model, g.value, g.cases, rate(g.p_casc)])));
+    renderPlanning(r.sample_planning);
     renderResearch(r);
     const truth=r.filters.truth_layer==='human'?'человек':'судья';table($('confidence'), ['Слой', 'Модель', 'Средняя c', 'N(c)', 'Средняя Δconf', 'N(Δ)', `Brier ↔ ${truth}`, `ECE ↔ ${truth}`, 'N калибровки'], Object.entries(r.confidence).flatMap(([layer, data]) => [{...data, model:'Все выбранные'}, ...data.by_model].map(item => [layer, item.model, number(item.values.mean), item.values.n, number(item.delta.mean), item.delta.n, number(item.calibration.brier), number(item.calibration.ece), item.calibration.n])));
-    table($('profiles'), ['Слой', 'Case', 'Роль / исполнение', 'Профиль', 'Значения', 'Δconf'], Object.entries(r.confidence).flatMap(([layer, data]) => data.profiles.map(p => [layer, p.case_id, `${p.agent} / ${p.agent_run_id}`, spark(p.values), p.values.map(number).join(' → '), number(p.delta)])));
+    state.profileOffset = 0;
+    $('profiles').replaceChildren();
+    if ($('profile-details').open) renderProfiles();
     stats('legacy', [['Heuristic confidence', number(r.legacy.heuristic_confidence.mean), `N=${r.legacy.heuristic_confidence.n}`], ['Legacy degradation', number(r.legacy.saved_confidence_degradation.mean), `N=${r.legacy.saved_confidence_degradation.n}`], ['model_confidence', number(r.legacy.model_confidence.mean), `N=${r.legacy.model_confidence.n}`]]);
     table($('agent-stats'), ['Модель', 'Агент', 'Heuristic mean / N', 'Самооценка mean / N', 'Операционные метрики'], r.legacy.agents.map(a => [a.model, a.agent, `${number(a.heuristic_confidence.mean)} / ${a.heuristic_confidence.n}`, `${number(a.model_confidence.mean)} / ${a.model_confidence.n}`, jsonCell(a.operational)]));
-    stats('features', [['Отклонение маршрута', percent(s.route_deviation.value), rate(s.route_deviation)], ['Claim assertion', percent(s.claim_assertion.value), rate(s.claim_assertion)], ['Решение без lookup', percent(s.decision_without_lookup.value), rate(s.decision_without_lookup)], ['Глубина проверки', number(s.verification_depth.mean), `N=${s.verification_depth.n}`], ['Carry-over · триграммы', percent(s.carry_over.mean), `N=${s.carry_over.n}`]]);
+    stats('features', [
+      ['Отклонение маршрута', percent(s.route_deviation.value), rate(s.route_deviation)],
+      ['Claim assertion · эвристика', percent(s.claim_assertion.value), rate(s.claim_assertion)],
+      ['Решение без успешного lookup', percent(s.decision_without_lookup.value), rate(s.decision_without_lookup)],
+      ['Глубина успешных проверок', number(s.verification_depth.mean), `N=${s.verification_depth.n}`],
+      ['Покрытие результатов чтения', percent(s.verification_coverage.value), rate(s.verification_coverage)],
+      ['Carry-over · триграммы', percent(s.carry_over.mean), `N=${s.carry_over.n} пар исполнений`],
+      ['Полный текст summary во входе', percent(s.literal_carry_over.value), rate(s.literal_carry_over)],
+      ['Длина summary · символы', number(s.handoff_characters.mean), `N=${s.handoff_characters.n}`],
+      ['Кандидаты потери атрибуции', percent(s.assertion_transition_candidates.value), rate(s.assertion_transition_candidates)]
+    ]);
+    table($('feature-models'), ['Модель', 'Решений с результатами чтения', 'Средняя глубина', 'Без успешного lookup', 'Дословный перенос summary', 'Кандидаты перехода'], r.dimensions.model.map(m => [m.model, rate(m.verification_coverage), number(m.verification_depth.mean), rate(m.decision_without_lookup), rate(m.literal_carry_over), rate(m.assertion_transition_candidates)]));
     table($('case-features'), ['Модель', 'Сценарий', 'Case', 'Маршрут', 'Отклонение', 'Признаки'], r.cases.map(c => [c.model, c.scenario, c.case_id, c.route.join(' → '), c.route_deviation == null ? 'Неизвестно' : c.route_deviation ? 'Да' : 'Нет', jsonCell(c.features)]));
     $('operational').textContent = JSON.stringify({metrics:s.operational, cost_by_currency:s.cost_by_currency}, null, 2);
     $('limitations').replaceChildren(...r.limitations.map(text => node('li', text)));
     $('interpretation').textContent = '';
     $('interpret').disabled = !state.catalog.interpreter_available || !c.completed;
   }
-  function renderResearch(report){
-    const research=report.research,o=research.outcomes;
-    stats('research-outcomes', [['Вредный исход',percent(o.harmful_outcome.value),rate(o.harmful_outcome)],['Ошибочная оплата',percent(o.wrong_payment.value),rate(o.wrong_payment)],['Ложная блокировка',percent(o.wrong_block.value),rate(o.wrong_block)],['Полезность',percent(o.utility.value),rate(o.utility)],['Успех атаки',percent(o.attack_success.value),rate(o.attack_success)],['Покрытие исходов',percent(o.outcome_coverage.value),rate(o.outcome_coverage)],['FPR контроля',percent(o.control_false_alarm.value),rate(o.control_false_alarm)],['κ двух разметчиков',number(o.interrater_kappa.value),`N=${o.interrater_kappa.n}`],['Потеря атрибуции · ручная',percent(o.reviewed_claim_laundering.value),rate(o.reviewed_claim_laundering)]]);
-    table($('research-groups'),['Модель','Сценарий','T','Seed','Вред / N','Utility / N','Покрытие ручных меток','needs_review','Границы P_casc с неизвестными'],report.groups.map(g=>{const x=g.research;return [g.model,g.scenario,g.temperature,g.seed,rate(x.harmful_outcome),rate(x.utility),rate(x.human_label_coverage),rate(x.needs_review),`${percent(x.cascade_bounds.lower)} … ${percent(x.cascade_bounds.upper)} · неизвестно ${x.cascade_bounds.unresolved}`];}));
-    $('research-joint').textContent=JSON.stringify({utility_attack:o.utility_attack_joint,p_casc_permissive:o.p_casc_permissive,p_casc_restrictive:o.p_casc_restrictive,policy_versions:o.policy_versions,outcome_sources:o.outcome_sources},null,2);
-    table($('error-generation'),['Модель','Роль','Размечено вызовов','EGR · чистый вход','EAR · наблюдательный'],research.errors.by_agent.map(a=>[a.model,a.agent,a.reviewed_invocations,rate(a.egr),rate(a.ear_observational)]));
-    table($('error-dependencies'),['Модель','Источник → получатель','P(err_j | err_i)','P(err_j | correct_i)','RR · наблюдательный'],research.errors.dependencies.map(e=>[e.model,`${e.source} → ${e.target}`,rate(e.p_error_given_error),rate(e.p_error_given_correct),number(e.rr_observational)]));
-    table($('stability'),['Модель','Сценарий','N','Согласие повторов','Std частот между seed','Seed-группы / параметры'],research.stability.map(s=>[s.model,s.scenario,s.eligible_cases,rate(s.repeat_agreement),number(s.between_seed_frequency.std),jsonCell({seed_rates:s.seed_cascade_rates,configuration:s.configuration_signature})]));
-    table($('review-cases'),['Модель','Сценарий','Попытка','Исход','Источник','Разметка'],report.cases.map(c=>{const button=node('button','Открыть','exp-button exp-secondary');button.type='button';button.onclick=()=>action(button,()=>openReview(c.case_id,report.source));return [c.model,c.scenario,c.case_id,c.research_outcome.harm_type,c.research_outcome.source,button];}));
+  function renderPlanning(plan) {
+    const titles = {harmful_outcome:'Вредный исход', utility:'Полезная задача выполнена', attack_success:'Успех атаки', p_casc:'P_casc'};
+    $('planning-summary').textContent = `${titles[plan.metric]} · доверие ${percent(plan.confidence_level)} · целевая половина ширины ДИ ${number(plan.margin_of_error * 100)} п.п. Групп условий ${plan.groups.length}. Текущая точность достигнута в ${plan.groups.filter(g => g.precision_reached).length}, без известных оценок ${plan.groups.filter(g => !g.observed.n).length}. Таблица прокручивается по горизонтали.`;
+    table($('sample-planning'), ['Модель', 'Сценарий', 'T', 'top_p', 'Seed', 'Условия', 'Известно / завершено', 'Доля и ДИ', 'Половина ширины · п.п.', 'Нужно известных · по пилоту', 'Нужно известных · p=0,5', 'Ещё известных', 'Ещё завершённых · прогноз', 'Состояние'], plan.groups.map(g => [
+      g.model, g.scenario, g.temperature, g.top_p, g.seed, jsonCell(g.configuration_signature),
+      `${g.observed.n} / ${g.completed}`, rate(g.observed),
+      g.current_half_width == null ? '—' : number(g.current_half_width * 100),
+      g.required_known_pilot, g.required_known_conservative, g.additional_known, g.additional_completed,
+      g.precision_reached ? 'Текущая точность достигнута' : g.observed.n ? 'Нужны повторы' : 'Нужны оценки исходов'
+    ]));
+  }
+  function renderProfiles() {
+    if (!state.report || !$('profile-details').open) return;
+    const layer = $('profile-layer').value;
+    const all = state.report.confidence[layer].profiles;
+    const status = $('profile-status').value;
+    const search = $('profile-search').value.trim().toLowerCase();
+    const rows = all.filter(p => {
+      if (status === 'complete' && p.delta == null) return false;
+      if (status === 'available' && !p.values.some(v => v != null)) return false;
+      return `${p.case_id} ${p.model} ${p.agent} ${p.agent_run_id}`.toLowerCase().includes(search);
+    });
+    const size = 50;
+    state.profileOffset = Math.min(state.profileOffset, Math.max(0, Math.ceil(rows.length / size) - 1) * size);
+    const page = rows.slice(state.profileOffset, state.profileOffset + size);
+    table($('profiles'), ['Модель', 'Case', 'Роль', 'Профиль', 'Значения', 'Δconf', 'Минимум c', 'Макс. просадка'], page.map(p => [p.model, p.case_id, p.agent, spark(p.values), p.values.map(number).join(' → '), number(p.delta), number(p.min_confidence), number(p.max_drawdown)]));
+    $('profile-count').textContent = `Показано ${rows.length ? state.profileOffset + 1 : 0}–${state.profileOffset + page.length} из ${rows.length}. Всего профилей слоя ${all.length}, полных ${all.filter(p => p.delta != null).length}.`;
+    $('profile-prev').disabled = state.profileOffset === 0;
+    $('profile-next').disabled = state.profileOffset + size >= rows.length;
+  }
+  function renderResearch(report) {
+    const research = report.research, o = research.outcomes, storage = research.storage;
+    stats('research-outcomes', [
+      ['Вред среди известных исходов', percent(o.harmful_outcome.value), rate(o.harmful_outcome)],
+      ['Ошибочная оплата', percent(o.wrong_payment.value), rate(o.wrong_payment)],
+      ['Ложная блокировка', percent(o.wrong_block.value), rate(o.wrong_block)],
+      ['Полезная задача выполнена', percent(o.utility.value), rate(o.utility)],
+      ['Цель атаки достигнута', percent(o.attack_success.value), rate(o.attack_success)],
+      ['Покрытие исходов', percent(o.outcome_coverage.value), rate(o.outcome_coverage)]
+    ]);
+    $('outcome-coverage').textContent = `Из ${report.coverage.completed} завершённых попыток вред определён для ${o.harmful_outcome.n}, неизвестен для ${report.coverage.completed - o.harmful_outcome.n}. Полезность определена для ${o.utility.n}. В выборке ${storage.cases} попыток всех статусов, сохранённых исходов ${storage.saved_outcomes}, снимков правил ${storage.policy_snapshots}, ручных ревизий ${storage.review_revisions}. Доли ошибочной оплаты и блокировки используют все известные исходы вреда.`;
+    table($('research-models'), ['Модель', 'Завершено', 'Вред / известные исходы', 'Ошибочная оплата', 'Ложная блокировка', 'Полезность', 'Покрытие исходов'], report.dimensions.model.map(m => {
+      const x = m.research;
+      return [m.model, m.cases, rate(x.harmful_outcome), rate(x.wrong_payment), rate(x.wrong_block), rate(x.utility), rate(x.outcome_coverage)];
+    }));
+    table($('research-groups'), ['Модель', 'Сценарий', 'T', 'top_p', 'Seed', 'Условия', 'Вред', 'Полезность', 'Ручные метки', 'needs_review', 'Границы P_casc'], report.groups.map(g => {
+      const x = g.research;
+      return [g.model, g.scenario, g.temperature, g.top_p, g.seed, jsonCell(g.configuration_signature), rate(x.harmful_outcome), rate(x.utility), rate(x.human_label_coverage), rate(x.needs_review), `${percent(x.cascade_bounds.lower)} … ${percent(x.cascade_bounds.upper)} · неизвестно ${x.cascade_bounds.unresolved}`];
+    }));
+    const joint = o.utility_attack_joint;
+    $('joint-coverage').textContent = `Обе оценки известны для ${joint.n} попыток. Применимые атаки с известным результатом ${o.attack_coverage.positive}/${o.attack_coverage.n}. В таблицу входят только попытки с применимой атакой и обеими оценками.`;
+    table($('research-joint'), ['Полезная задача', 'Атака остановлена', 'Цель атаки достигнута'], [
+      ['Выполнена', joint.counts.utility_success_attack_stopped || 0, joint.counts.attack_succeeded_utility_success || 0],
+      ['Не выполнена', joint.counts.utility_failed_attack_stopped || 0, joint.counts.attack_succeeded_utility_failed || 0]
+    ]);
+    table($('outcome-policies'), ['Сведения', 'Значения'], [
+      ['Версии правил', jsonCell(o.policy_versions)],
+      ['Происхождение правила', jsonCell(o.policy_sources)],
+      ['Источник оценки', jsonCell(o.outcome_sources)]
+    ]);
+    stats('research-quality', [
+      ['Разрешающие каскады P_casc⁺', percent(o.p_casc_permissive.value), rate(o.p_casc_permissive)],
+      ['Запрещающие каскады P_casc⁻', percent(o.p_casc_restrictive.value), rate(o.p_casc_restrictive)],
+      ['Ручные метки типов', percent(o.human_label_coverage.value), rate(o.human_label_coverage)],
+      ['FPR контроля', percent(o.control_false_alarm.value), rate(o.control_false_alarm)],
+      ['κ двух разметчиков', number(o.interrater_kappa.value), `N=${o.interrater_kappa.n}`],
+      ['Потеря атрибуции · ручная', percent(o.reviewed_claim_laundering.value), rate(o.reviewed_claim_laundering)]
+    ]);
+    table($('error-generation'), ['Модель', 'Роль', 'Размечено вызовов', 'EGR · чистый вход', 'EAR · наблюдательный'], research.errors.by_agent.map(a => [a.model, a.agent, a.reviewed_invocations, rate(a.egr), rate(a.ear_observational)]));
+    if (!research.errors.by_agent.length) $('error-generation').append(node('p', 'Для EGR и EAR добавьте независимые метки исполнения агента с чистотой входа и происхождением ошибки в разделе разметки.', 'exp-help'));
+    table($('error-dependencies'), ['Модель', 'Источник → получатель', 'P(err_j | err_i)', 'P(err_j | correct_i)', 'RR · наблюдательный'], research.errors.dependencies.map(e => [e.model, `${e.source} → ${e.target}`, rate(e.p_error_given_error), rate(e.p_error_given_correct), number(e.rr_observational)]));
+    table($('stability'), ['Модель', 'Сценарий', 'N', 'Согласие повторов', 'Std частот между seed', 'Seed и параметры'], research.stability.map(s => [s.model, s.scenario, s.eligible_cases, rate(s.repeat_agreement), number(s.between_seed_frequency.std), jsonCell({seed_rates:s.seed_cascade_rates, configuration:s.configuration_signature})]));
+    table($('review-cases'), ['Модель', 'Сценарий', 'Попытка', 'Исход', 'Источник', 'Разметка'], report.cases.map(c => {
+      const button = node('button', 'Открыть', 'exp-button exp-secondary');
+      button.type = 'button'; button.onclick = () => action(button, () => openReview(c.case_id, report.source));
+      return [c.model, c.scenario, c.case_id, c.research_outcome.harm_type, c.research_outcome.source, button];
+    }));
   }
   async function openReview(id,source){
     const c=await api(`/cases/${encodeURIComponent(id)}?source=${source}`),host=$('review-body');host.replaceChildren();$('review-title').textContent=`Разметка · ${c.scenario_id} · ${id.slice(0,8)}`;
@@ -189,6 +283,12 @@
     const save=node('button','Сохранить новую версию оценки','exp-button exp-primary');save.type='button';save.onclick=()=>action(save,async()=>{if(reason.value.trim().length<10)throw new Error('Укажите обоснование не менее 10 символов.');await api(`/cases/${encodeURIComponent(id)}/assessment?source=${source}`,{type:type.value,reason:reason.value.trim(),...read()});$('review-dialog').close();await query();message('Новая версия независимой оценки сохранена.');});host.append(save);
     if(!$('review-dialog').open)$('review-dialog').showModal();
   }
+  $('profile-details').addEventListener('toggle', renderProfiles);
+  for (const id of ['profile-layer', 'profile-status', 'profile-search']) {
+    $(id).addEventListener(id === 'profile-search' ? 'input' : 'change', () => {state.profileOffset = 0; renderProfiles();});
+  }
+  $('profile-prev').addEventListener('click', () => {state.profileOffset -= 50; renderProfiles();});
+  $('profile-next').addEventListener('click', () => {state.profileOffset += 50; renderProfiles();});
   $('review-close').addEventListener('click',()=>$('review-dialog').close());
   async function loadRows() {
     if (!state.applied || !$('table').value) return;

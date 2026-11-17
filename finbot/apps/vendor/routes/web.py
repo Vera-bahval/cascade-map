@@ -251,12 +251,19 @@ async def vendor_analytics(
     request: Request, session_context: SessionContext = Depends(get_session_context)
 ):
     script = Path(__file__).resolve().parents[3] / "static/js/vendor/analytics.js"
+    assets = (
+        script,
+        script.with_name("analytics-dashboard.js"),
+        script.parents[2] / "css/vendor/analytics.css",
+    )
     return template_response(
         request,
         "pages/analytics.html",
         {
             "request": request,
-            "analytics_version": hashlib.sha256(script.read_bytes()).hexdigest()[:12],
+            "analytics_version": hashlib.sha256(
+                b"".join(p.read_bytes() for p in assets)
+            ).hexdigest()[:12],
             "vendor_context": session_context.current_vendor,
             "is_multi_vendor": session_context.is_multi_vendor_user(),
         },

@@ -42,9 +42,9 @@ def research_group(rows):
     directional = [
         r
         for r in triggers
-        if r["type"] is not None
+        if r["human_type"] is not None
         and (
-            r["type"] not in CASCADE
+            r["human_type"] not in CASCADE
             or (r["review"].get("cascade_direction") or "unknown") != "unknown"
         )
     ]
@@ -100,6 +100,9 @@ def research_group(rows):
             ),
         },
         "outcome_coverage": fraction(len(harms), len(rows)),
+        "utility_coverage": fraction(len(utilities), len(rows)),
+        "attack_coverage": fraction(len(attacks), sum(o["attack_applicable"] for o in outcomes)),
+        "harm_types": dict(Counter(o["harm_type"] for o in outcomes)),
         "human_label_coverage": fraction(sum(r["human_type"] is not None for r in rows), len(rows)),
         "needs_review": fraction(
             sum(r["detector_type"] == "needs_review" for r in rows), len(rows)
@@ -119,7 +122,7 @@ def research_group(rows):
         },
         "p_casc_permissive": fraction(
             sum(
-                r["type"] in CASCADE
+                r["human_type"] in CASCADE
                 and r["review"].get("cascade_direction") in {"permissive", "both"}
                 for r in directional
             ),
@@ -127,7 +130,7 @@ def research_group(rows):
         ),
         "p_casc_restrictive": fraction(
             sum(
-                r["type"] in CASCADE
+                r["human_type"] in CASCADE
                 and r["review"].get("cascade_direction") in {"restrictive", "both"}
                 for r in directional
             ),
@@ -145,33 +148,34 @@ def research_group(rows):
         },
         "outcome_sources": dict(Counter(o["source"] for o in outcomes)),
         "policy_versions": dict(Counter(o["policy"]["version"] for o in outcomes)),
+        "policy_sources": dict(Counter(o.get("policy_source", "unknown") for o in outcomes)),
     }
+
+
+def condition_signature(row, *, include_seed=True):
+    excluded = {
+        "name",
+        "connection_id",
+        "price_source",
+        "price_checked_at",
+        "input_price",
+        "output_price",
+        "cached_input_price",
+        "currency",
+    }
+    if not include_seed:
+        excluded.add("seed")
+    signature = {k: v for k, v in row["config"].items() if k not in excluded}
+    return json.dumps([signature, row["protocol"], row["versions"]], sort_keys=True)
 
 
 def repeat_stability(rows):
     buckets = defaultdict(list)
     for row in rows:
-        signature = {
-            k: v
-            for k, v in row["config"].items()
-            if k
-            not in {
-                "name",
-                "seed",
-                "connection_id",
-                "price_source",
-                "price_checked_at",
-                "input_price",
-                "output_price",
-                "cached_input_price",
-                "currency",
-                "evaluate_iterations",
-            }
-        }
         key = (
             row["model"],
             row["scenario"],
-            json.dumps([signature, row["protocol"], row["versions"]], sort_keys=True),
+            condition_signature(row, include_seed=False),
         )
         buckets[key].append(row)
     output = []

@@ -123,3 +123,54 @@ def test_laundering_requires_same_claim_review_and_distinct_humans_for_kappa():
         {"reviewer_key": "two", "type": "full_cascade", "reviewed_at": "2026-11-03"}
     )
     assert summarize(data, AnalyticsFilter())["research"]["outcomes"]["interrater_kappa"]["n"] == 1
+
+
+def test_directional_rates_require_independent_labels_even_with_detector_frequencies():
+    data = dataset()
+    for case in data["cases"]:
+        case["human_review"] = {}
+    outcomes = summarize(data, AnalyticsFilter(label_layer="detector"))["research"]["outcomes"]
+    assert outcomes["p_casc_permissive"]["n"] == 0
+    assert outcomes["p_casc_permissive"]["value"] is None
+    assert outcomes["p_casc_restrictive"]["value"] is None
+
+
+def test_directional_rates_use_the_same_review_for_type_and_direction():
+    data = dataset()
+    data["cases"] = data["cases"][:1]
+    data["cases"][0]["human_review"].update(cascade_direction="permissive")
+    data["cases"][0]["report"]["detector"]["type"] = "none"
+    outcomes = summarize(data, AnalyticsFilter(label_layer="detector"))["research"]["outcomes"]
+    assert outcomes["p_casc_permissive"]["value"] == 1
+
+
+def test_summary_groups_keep_top_p_and_other_conditions_separate():
+    data = dataset()
+    first = data["runs"][0]
+    first["config"]["top_p"] = 1.0
+    second = deepcopy(first)
+    second.update(id="other")
+    second["config"]["top_p"] = 0.8
+    data["runs"] = [first, second]
+    original = deepcopy(data["cases"][0])
+    other = deepcopy(original)
+    other.update(id="other-case", run_id="other")
+    data["cases"] = [original, other]
+    groups = summarize(data, AnalyticsFilter())["groups"]
+    assert len(groups) == 2
+    assert {g["top_p"] for g in groups} == {0.8, 1.0}
+    assert all(g["cases"] == 1 for g in groups)
+
+
+def test_zero_endpoint_delta_preserves_intermediate_dip():
+    from tests.unit.experiments.test_analytics import iteration
+
+    data = dataset()
+    data["cases"][0]["observations"]["iterations"] = [
+        iteration(1, 1.0),
+        iteration(2, 0.5),
+        iteration(3, 1.0),
+    ]
+    profile = summarize(data, AnalyticsFilter())["confidence"]["judge"]["profiles"][0]
+    assert profile["delta"] == 0
+    assert profile["min_confidence"] == profile["max_drawdown"] == 0.5

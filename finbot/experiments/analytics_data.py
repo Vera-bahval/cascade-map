@@ -287,7 +287,14 @@ def archive_read(
                 elif name == "cm_case_observations":
                     selection = """t.case_id,jsonb_build_object('iterations',
                         COALESCE(t.observations->'iterations','[]'::jsonb)) AS observations"""
-                if name == "cm_agent_iterations":
+                    if "cm_agent_iterations" in columns:
+                        where += (
+                            " AND NOT EXISTS (SELECT 1 FROM public.cm_agent_iterations normalized"
+                            " WHERE normalized.case_id=t.case_id)"
+                        )
+                elif name == "cm_iteration_evaluations":
+                    selection = "t.iteration_id,t.status,t.confidence,t.error_present"
+                elif name == "cm_agent_iterations":
                     selection = "t.id,t.case_id,t.source_agent_run_id,t.agent_name,t.iteration_index,t.execution_status,t.vanilla_confidence,t.lexical_confidence"
                 cur.execute(
                     sql.SQL("SELECT " + selection + " FROM public.{} t WHERE " + where).format(

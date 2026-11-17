@@ -438,3 +438,8 @@ def test_archive_reader_uses_readonly_snapshot_and_normalizes_child_rows():
     judge = result["cases"][0]["observations"]["iterations"][0]["judge"]
     assert judge["confidence"] == 0.8 and judge["method"] == "fixture"
     assert all("INSERT" not in statement and "UPDATE " not in statement for statement in observed)
+    assert any("NOT EXISTS" in statement for statement in observed)
+    assert any(
+        "t.iteration_id,t.status,t.confidence,t.error_present" in statement
+        for statement in observed
+    )

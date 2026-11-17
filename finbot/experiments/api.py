@@ -9,6 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
+from psycopg2.errors import QueryCanceled
 
 from finbot.core.auth.middleware import get_session_context
 from finbot.core.auth.session import SessionContext
@@ -91,6 +92,11 @@ def analytics_read(fn, *args, **kwargs):
     """Database diagnostics must not leak connection strings or credentials."""
     try:
         return fn(*args, **kwargs)
+    except QueryCanceled as exc:
+        raise HTTPException(
+            503,
+            "PostgreSQL отменил запрос аналитики. Попробуйте сузить выборку или повторить запрос.",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             503,
